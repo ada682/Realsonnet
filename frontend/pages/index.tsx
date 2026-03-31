@@ -7,8 +7,8 @@ import {
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend
 } from "recharts";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const WS  = (process.env.NEXT_PUBLIC_WS_URL  || "ws://localhost:8000") + "/ws/live";
+const API = process.env.NEXT_PUBLIC_API_URL || "";
+const WS  = process.env.NEXT_PUBLIC_WS_URL || "";
 
 // ── types ────────────────────────────────────────────────────────────────────
 interface Stats {
