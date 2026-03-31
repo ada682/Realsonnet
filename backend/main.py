@@ -16,7 +16,6 @@ from pydantic import BaseModel
 
 # ── adjust sys.path so we can import from the bot directory ───────────────────
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from database import get_db
 from learning_engine import get_learning_engine
