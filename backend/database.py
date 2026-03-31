@@ -10,6 +10,7 @@
 import sqlite3
 import json
 import logging
+import os
 from datetime import datetime
 from dataclasses import dataclass, asdict
 from typing import Optional, List, Dict, Any
@@ -17,7 +18,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).parent / "predictions.db"
+DB_PATH = os.environ.get("DATABASE_PATH", "/tmp/predictions.db")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
