@@ -6,7 +6,6 @@ import {
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell
 } from "recharts";
 
-// ── FIX 1: Hardcoded fallback URL supaya tidak pernah kosong ──────────────────
 const API = process.env.NEXT_PUBLIC_API_URL || "https://caring-contentment-production.up.railway.app";
 const WS  = process.env.NEXT_PUBLIC_WS_URL  || "wss://caring-contentment-production.up.railway.app/ws/live";
 
