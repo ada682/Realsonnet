@@ -1,782 +1,604 @@
-// frontend/pages/index.js  ── Parlay AI Dashboard v2
+// frontend/pages/index.js — Parlay AI Dashboard v3
 "use client";
 import { useEffect, useState, useRef, useCallback } from "react";
 import Head from "next/head";
 import {
-  LineChart, Line, AreaChart, Area,
-  BarChart, Bar, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid
+  AreaChart, Area, BarChart, Bar,
+  XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell
 } from "recharts";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "";
 const WS  = process.env.NEXT_PUBLIC_WS_URL  || "";
 
-// ─── design tokens ────────────────────────────────────────────────────────────
 const C = {
-  bg:       "#080B10",
-  surface:  "#0D1117",
-  card:     "#111620",
-  border:   "#1C2333",
-  borderHi: "#2A3650",
-  win:      "#00E5A0",
-  loss:     "#FF4757",
-  pending:  "#FFB830",
-  accent:   "#4D8AFF",
-  accentDim:"#1A2F5A",
-  text:     "#E6EDF3",
-  muted:    "#8B949E",
-  dim:      "#3D4451",
+  bg:       "#060810",
+  surface:  "#0A0D18",
+  card:     "#0E1220",
+  cardHi:   "#121828",
+  border:   "#181E30",
+  borderHi: "#1E2840",
+  win:      "#00D68F",
+  loss:     "#FF3D5A",
+  pend:     "#FFB020",
+  blue:     "#3D7EFF",
+  blueGlow: "rgba(61,126,255,.15)",
+  cyan:     "#00C8E0",
+  purple:   "#8B5CF6",
+  text:     "#E2E8F8",
+  sub:      "#8896B0",
+  muted:    "#3D4F6A",
+  dim:      "#1A2030",
 };
 
-// ─── global styles injected once ──────────────────────────────────────────────
-const GLOBAL_CSS = `
-  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Syne:wght@400;600;700;800&display=swap');
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html { scroll-behavior: smooth; }
-  body {
-    background: ${C.bg};
-    color: ${C.text};
-    font-family: 'Syne', sans-serif;
-    -webkit-font-smoothing: antialiased;
-    overflow-x: hidden;
-  }
-  ::-webkit-scrollbar { width: 4px; height: 4px; }
-  ::-webkit-scrollbar-track { background: ${C.bg}; }
-  ::-webkit-scrollbar-thumb { background: ${C.border}; border-radius: 2px; }
-  ::-webkit-scrollbar-thumb:hover { background: ${C.borderHi}; }
+const mono = { fontFamily: "'Space Mono', monospace" };
 
-  /* scanline overlay for depth */
-  body::after {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background: repeating-linear-gradient(
-      0deg,
-      transparent,
-      transparent 2px,
-      rgba(0,0,0,.04) 2px,
-      rgba(0,0,0,.04) 4px
-    );
-    pointer-events: none;
-    z-index: 9999;
-  }
-
-  .mono { font-family: 'JetBrains Mono', monospace; }
-
-  /* card */
-  .card {
-    background: ${C.card};
-    border: 1px solid ${C.border};
-    border-radius: 10px;
-    position: relative;
-    overflow: hidden;
-  }
-  .card::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(135deg, rgba(77,138,255,.04) 0%, transparent 60%);
-    pointer-events: none;
-  }
-
-  /* stat card glow on hover */
-  .stat-card:hover {
-    border-color: ${C.borderHi};
-    transform: translateY(-2px);
-    transition: all .2s ease;
-  }
-  .stat-card { transition: all .2s ease; cursor: default; }
-
-  /* tab */
-  .tab-btn {
-    padding: 7px 16px;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 13px;
-    font-weight: 600;
-    border: 1px solid transparent;
-    font-family: 'Syne', sans-serif;
-    letter-spacing: .3px;
-    transition: all .15s;
-  }
-  .tab-btn.active {
-    background: ${C.accentDim};
-    border-color: ${C.accent}55;
-    color: ${C.accent};
-  }
-  .tab-btn.inactive {
-    background: transparent;
-    color: ${C.muted};
-  }
-  .tab-btn.inactive:hover {
-    background: ${C.card};
-    color: ${C.text};
-    border-color: ${C.border};
-  }
-
-  /* table */
-  .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .data-table th {
-    text-align: left;
-    padding: 11px 14px;
-    color: ${C.muted};
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: .8px;
-    text-transform: uppercase;
-    border-bottom: 1px solid ${C.border};
-    font-family: 'JetBrains Mono', monospace;
-  }
-  .data-table td {
-    padding: 10px 14px;
-    border-bottom: 1px solid ${C.border}44;
-    vertical-align: middle;
-  }
-  .data-table tbody tr:hover td { background: rgba(77,138,255,.03); }
-  .data-table tbody tr:last-child td { border-bottom: none; }
-
-  /* badge */
-  .badge {
-    display: inline-flex;
-    align-items: center;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: .5px;
-    font-family: 'JetBrains Mono', monospace;
-  }
-  .b-win     { background: rgba(0,229,160,.12);  color: ${C.win};     border: 1px solid rgba(0,229,160,.25); }
-  .b-loss    { background: rgba(255,71,87,.12);   color: ${C.loss};    border: 1px solid rgba(255,71,87,.25); }
-  .b-pending { background: rgba(255,184,48,.1);   color: ${C.pending}; border: 1px solid rgba(255,184,48,.25); }
-  .b-1x2     { background: rgba(77,138,255,.12);  color: ${C.accent};  border: 1px solid rgba(77,138,255,.3); }
-  .b-ou      { background: rgba(0,229,160,.08);   color: #40D0E0;      border: 1px solid rgba(0,229,160,.2); }
-  .b-ah      { background: rgba(255,184,48,.08);  color: ${C.pending}; border: 1px solid rgba(255,184,48,.2); }
-  .b-skip    { background: rgba(139,148,158,.08); color: ${C.muted};   border: 1px solid rgba(139,148,158,.2); }
-
-  /* pulse dot */
-  .pulse-dot {
-    width: 7px; height: 7px; border-radius: 50%;
-    background: ${C.win};
-    animation: pulse-anim 1.8s ease-in-out infinite;
-    flex-shrink: 0;
-  }
-  @keyframes pulse-anim {
-    0%,100% { opacity: 1; box-shadow: 0 0 0 0 rgba(0,229,160,.6); }
-    50%      { opacity: .7; box-shadow: 0 0 0 5px rgba(0,229,160,0); }
-  }
-
-  /* log entry */
-  .log-entry {
-    border-radius: 7px;
-    padding: 9px 11px;
-    font-size: 12px;
-    border: 1px solid transparent;
-    animation: log-slide .25s ease;
-    flex-shrink: 0;
-  }
-  @keyframes log-slide {
-    from { opacity: 0; transform: translateX(8px); }
-    to   { opacity: 1; transform: translateX(0); }
-  }
-  .log-new_prediction { background: rgba(77,138,255,.08); border-color: rgba(77,138,255,.2); }
-  .log-result_tracked { background: rgba(0,229,160,.07);  border-color: rgba(0,229,160,.2); }
-  .log-parlay_ready   { background: rgba(255,184,48,.07); border-color: rgba(255,184,48,.2); }
-  .log-error          { background: rgba(255,71,87,.07);  border-color: rgba(255,71,87,.2); }
-  .log-default        { background: ${C.card};             border-color: ${C.border}; }
-
-  /* parlay panel */
-  .parlay-panel {
-    border-radius: 8px;
-    padding: 14px;
-    background: rgba(77,138,255,.05);
-    border: 1px solid rgba(77,138,255,.15);
-    margin-bottom: 10px;
-  }
-
-  /* comp select */
-  .comp-select {
-    background: ${C.surface};
-    border: 1px solid ${C.border};
-    color: ${C.text};
-    padding: 6px 12px;
-    border-radius: 6px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 12px;
-    outline: none;
-    cursor: pointer;
-  }
-  .comp-select:focus { border-color: ${C.accent}55; }
-
-  /* tooltip override */
-  .recharts-tooltip-wrapper .recharts-default-tooltip {
-    background: ${C.card} !important;
-    border: 1px solid ${C.borderHi} !important;
-    border-radius: 7px !important;
-    font-family: 'JetBrains Mono', monospace !important;
-    font-size: 12px !important;
-  }
-
-  /* header glow line */
-  .header-line {
-    height: 1px;
-    background: linear-gradient(90deg, transparent, ${C.accent}44, transparent);
-    margin-bottom: 28px;
-  }
+const G = `
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{background:${C.bg};color:${C.text};font-family:'Space Grotesk',sans-serif;-webkit-font-smoothing:antialiased;min-height:100vh;overflow-x:hidden}
+::-webkit-scrollbar{width:3px;height:3px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:${C.border};border-radius:99px}
+.mono{font-family:'Space Mono',monospace}
+.card{background:${C.card};border:1px solid ${C.border};border-radius:16px;position:relative;overflow:hidden;transition:border-color .2s}
+.card:hover{border-color:${C.borderHi}}
+.card-inner::after{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,.025) 0%,transparent 50%);pointer-events:none;border-radius:inherit}
+.stat-card{padding:22px 24px;cursor:default;transition:all .25s}
+.stat-card:hover{border-color:${C.borderHi};transform:translateY(-3px);box-shadow:0 16px 48px rgba(0,0,0,.5)}
+.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th{text-align:left;padding:11px 16px;color:${C.sub};font-size:11px;font-weight:600;letter-spacing:.9px;text-transform:uppercase;border-bottom:1px solid ${C.border};font-family:'Space Mono',monospace}
+.tbl td{padding:11px 16px;border-bottom:1px solid ${C.border}30;vertical-align:middle}
+.tbl tbody tr{transition:background .15s}
+.tbl tbody tr:hover td{background:rgba(61,126,255,.04)}
+.tbl tbody tr:last-child td{border-bottom:none}
+.badge{display:inline-flex;align-items:center;padding:3px 9px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:.6px;font-family:'Space Mono',monospace;white-space:nowrap}
+.bw{background:rgba(0,214,143,.12);color:${C.win};border:1px solid rgba(0,214,143,.25)}
+.bl{background:rgba(255,61,90,.12);color:${C.loss};border:1px solid rgba(255,61,90,.25)}
+.bp{background:rgba(255,176,32,.1);color:${C.pend};border:1px solid rgba(255,176,32,.25)}
+.b1{background:rgba(61,126,255,.12);color:${C.blue};border:1px solid rgba(61,126,255,.3)}
+.bo{background:rgba(0,200,224,.1);color:${C.cyan};border:1px solid rgba(0,200,224,.25)}
+.ba{background:rgba(139,92,246,.1);color:${C.purple};border:1px solid rgba(139,92,246,.25)}
+.bs{background:rgba(61,79,106,.15);color:${C.sub};border:1px solid rgba(61,79,106,.3)}
+.tab{padding:8px 18px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;border:1px solid transparent;font-family:'Space Grotesk',sans-serif;letter-spacing:.2px;transition:all .15s}
+.tab-on{background:rgba(61,126,255,.15);border-color:rgba(61,126,255,.35);color:${C.blue}}
+.tab-off{background:transparent;color:${C.sub}}
+.tab-off:hover{background:${C.card};color:${C.text};border-color:${C.border}}
+.sel{background:${C.surface};border:1px solid ${C.border};color:${C.text};padding:7px 14px;border-radius:8px;font-family:'Space Mono',monospace;font-size:12px;outline:none;cursor:pointer;transition:border-color .15s}
+.sel:focus{border-color:rgba(61,126,255,.55)}
+.dot{width:7px;height:7px;border-radius:50%;background:${C.win};flex-shrink:0;animation:dpulse 2s ease-in-out infinite}
+.dot-off{background:${C.loss};animation:none}
+@keyframes dpulse{0%,100%{box-shadow:0 0 0 0 rgba(0,214,143,.5)}50%{box-shadow:0 0 0 6px rgba(0,214,143,0)}}
+.log{border-radius:10px;padding:10px 12px;border:1px solid transparent;flex-shrink:0;animation:lslide .2s ease}
+@keyframes lslide{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+.log-pred{background:rgba(61,126,255,.07);border-color:rgba(61,126,255,.2)}
+.log-res{background:rgba(0,214,143,.07);border-color:rgba(0,214,143,.2)}
+.log-parl{background:rgba(255,176,32,.06);border-color:rgba(255,176,32,.2)}
+.log-err{background:rgba(255,61,90,.07);border-color:rgba(255,61,90,.2)}
+.log-def{background:${C.card};border-color:${C.border}}
+.ppick{font-family:'Space Mono',monospace;font-size:11px;padding:7px 10px;border-bottom:1px solid ${C.border}22;display:flex;align-items:flex-start;gap:8px;color:${C.text};line-height:1.5}
+.ppick:last-child{border-bottom:none}
+.sh{font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:${C.sub};font-family:'Space Mono',monospace;display:flex;align-items:center;gap:8px}
+.gnum{font-family:'Space Mono',monospace;font-size:30px;font-weight:700;letter-spacing:-1.5px;line-height:1}
+@keyframes ticker{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+.ticker-wrap{overflow:hidden;background:${C.surface};border-top:1px solid ${C.border};border-bottom:1px solid ${C.border};height:32px;display:flex;align-items:center;margin-bottom:24px}
+.ticker-inner{display:flex;gap:40px;animation:ticker 30s linear infinite;white-space:nowrap;padding:0 20px}
+.ticker-inner:hover{animation-play-state:paused}
+.recharts-tooltip-wrapper{pointer-events:none!important}
 `;
 
-// ─── Tooltip ──────────────────────────────────────────────────────────────────
-const ChartTooltip = ({ active, payload, label }) => {
+// ── FIXED Custom Tooltip — no more white box ──────────────────────────────────
+const CTip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null;
   return (
-    <div style={{ background: C.card, border: `1px solid ${C.borderHi}`, borderRadius: 7, padding: "8px 12px" }}>
-      <div style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: C.muted, marginBottom: 4 }}>{label}</div>
+    <div style={{
+      background: C.cardHi, border: `1px solid ${C.borderHi}`,
+      borderRadius: 10, padding: "10px 14px",
+      fontFamily: "'Space Mono', monospace", fontSize: 12,
+      boxShadow: "0 8px 32px rgba(0,0,0,.6)", pointerEvents: "none",
+    }}>
+      <div style={{ color: C.sub, fontSize: 10, marginBottom: 6, letterSpacing: ".6px" }}>{label}</div>
       {payload.map((p, i) => (
-        <div key={i} style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: p.color }}>
-          {p.name}: {typeof p.value === "number" ? p.value.toFixed(1) : p.value}
+        <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, color: C.text }}>
+          <span style={{ width: 7, height: 7, borderRadius: "50%", background: p.color, display: "inline-block", flexShrink: 0 }} />
+          <span style={{ color: C.sub, fontSize: 10 }}>{p.name}</span>
+          <span style={{ fontWeight: 700, marginLeft: "auto", paddingLeft: 16, color: p.color }}>
+            {typeof p.value === "number" ? p.value.toFixed(1) : p.value}
+          </span>
         </div>
       ))}
     </div>
   );
 };
 
-// ─── Confidence bar ───────────────────────────────────────────────────────────
+// ── Confidence bar ─────────────────────────────────────────────────────────────
 const ConfBar = ({ val }) => {
   const filled = Math.min(Math.round(val / 20), 5);
-  const color  = val >= 80 ? C.win : val >= 60 ? C.accent : val >= 40 ? C.pending : C.loss;
+  const clr = val >= 80 ? C.win : val >= 60 ? C.blue : val >= 40 ? C.pend : C.loss;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
       {[0,1,2,3,4].map(i => (
         <div key={i} style={{
-          width: 5, height: 14, borderRadius: 2,
-          background: i < filled ? color : C.dim,
-          transition: "background .3s",
+          width: 5, height: 14, borderRadius: 3,
+          background: i < filled ? clr : C.dim,
+          boxShadow: i < filled ? `0 0 5px ${clr}55` : "none",
         }} />
       ))}
-      <span style={{ fontFamily: "JetBrains Mono", fontSize: 10, color: C.muted, marginLeft: 5 }}>{val}%</span>
+      <span style={{ ...mono, fontSize: 10, color: C.muted, marginLeft: 6 }}>{val}%</span>
     </div>
   );
 };
 
-// ─── Stat Card ────────────────────────────────────────────────────────────────
-const StatCard = ({ value, label, color, icon, sub }) => (
-  <div className="card stat-card" style={{ padding: "18px 20px" }}>
+// ── Stat Card ──────────────────────────────────────────────────────────────────
+const StatCard = ({ value, label, color, icon }) => (
+  <div className="card stat-card card-inner">
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
       <div>
-        <div style={{
-          fontSize: 30, fontWeight: 800, color: color || C.text,
-          lineHeight: 1, letterSpacing: "-1px",
-          fontFamily: "'JetBrains Mono', monospace",
-        }}>
-          {value}
-        </div>
-        <div style={{ fontSize: 11, color: C.muted, marginTop: 6, fontWeight: 600, letterSpacing: ".8px", textTransform: "uppercase" }}>
+        <div className="gnum" style={{ color: color || C.text }}>{value}</div>
+        <div style={{ fontSize: 11, color: C.sub, marginTop: 8, fontWeight: 600, letterSpacing: ".8px", textTransform: "uppercase" }}>
           {label}
         </div>
-        {sub && <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{sub}</div>}
       </div>
-      <div style={{ fontSize: 20, opacity: .5 }}>{icon}</div>
+      <div style={{
+        width: 38, height: 38, borderRadius: 10, display: "flex",
+        alignItems: "center", justifyContent: "center", fontSize: 17,
+        background: `${color}15`, border: `1px solid ${color}20`, flexShrink: 0,
+      }}>{icon}</div>
     </div>
   </div>
 );
 
-// ─── Log Card ─────────────────────────────────────────────────────────────────
+// ── Log Card ───────────────────────────────────────────────────────────────────
 const LogCard = ({ log }) => {
   const time = new Date(log.ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  const eventLabel = {
-    new_prediction: "NEW PICK",
-    result_tracked: "RESULT IN",
-    parlay_ready:   "PARLAY READY",
-    error:          "ERROR",
-  }[log.event] || log.event.replace(/_/g, " ").toUpperCase();
-
-  const eventColor = {
-    new_prediction: C.accent,
-    result_tracked: C.win,
-    parlay_ready:   C.pending,
-    error:          C.loss,
-  }[log.event] || C.muted;
-
-  const cn = `log-entry log-${log.event in {new_prediction:1,result_tracked:1,parlay_ready:1,error:1} ? log.event : "default"}`;
+  const ev = {
+    new_prediction: { label: "NEW PICK",    color: C.blue,   cn: "log-pred" },
+    result_tracked: { label: "RESULT",       color: C.win,    cn: "log-res"  },
+    parlay_ready:   { label: "PARLAY READY", color: C.pend,   cn: "log-parl" },
+    error:          { label: "ERROR",         color: C.loss,   cn: "log-err"  },
+  }[log.event] || { label: log.event.replace(/_/g," ").toUpperCase(), color: C.sub, cn: "log-def" };
 
   return (
-    <div className={cn}>
+    <div className={`log ${ev.cn}`}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-        <span style={{ fontFamily: "JetBrains Mono", fontSize: 10, fontWeight: 700, color: eventColor, letterSpacing: ".8px" }}>
-          {eventLabel}
-        </span>
-        <span style={{ fontFamily: "JetBrains Mono", fontSize: 10, color: C.dim }}>{time}</span>
+        <span style={{ ...mono, fontSize: 10, fontWeight: 700, color: ev.color, letterSpacing: ".8px" }}>{ev.label}</span>
+        <span style={{ ...mono, fontSize: 10, color: C.muted }}>{time}</span>
       </div>
-      <div style={{ color: "#C9D1D9", fontFamily: "JetBrains Mono", lineHeight: 1.5 }}>
-        {log.event === "new_prediction" && (
-          <>
-            <span style={{ color: C.text }}>{log.data?.match}</span>
-            <br />
-            <span style={{ color: C.accent }}>[{log.data?.bet_type}]</span>{" "}
-            <span style={{ color: C.win, fontWeight: 600 }}>{log.data?.pick}</span>{" "}
-            <span style={{ color: C.muted }}>• {log.data?.confidence}% conf</span>
-          </>
-        )}
-        {log.event === "result_tracked" && (
-          <>
-            <span style={{ color: C.text }}>{log.data?.match}</span>{" "}
-            <span style={{ fontFamily: "JetBrains Mono", color: C.muted }}>{log.data?.score}</span>{" → "}
-            <span style={{ color: log.data?.outcome === "win" ? C.win : C.loss, fontWeight: 700 }}>
-              {log.data?.outcome?.toUpperCase()}
-            </span>
-          </>
-        )}
-        {log.event === "parlay_ready" && (
-          <>
-            <span style={{ color: C.pending }}>🏆 Final parlay built</span>
-            <span style={{ color: C.muted }}> • {log.data?.match_count} matches</span>
-          </>
-        )}
-        {!["new_prediction","result_tracked","parlay_ready"].includes(log.event) && (
-          <span style={{ color: C.muted }}>{JSON.stringify(log.data).slice(0, 90)}</span>
-        )}
+      <div style={{ ...mono, fontSize: 11, lineHeight: 1.6, color: C.sub }}>
+        {log.event === "new_prediction" && <>
+          <span style={{ color: C.text }}>{log.data?.match}</span><br />
+          <span style={{ color: ev.color }}>[{log.data?.bet_type}]</span>{" "}
+          <span style={{ color: C.win, fontWeight: 700 }}>{log.data?.pick}</span>{" "}
+          <span style={{ color: C.muted }}>· {log.data?.confidence}%</span>
+        </>}
+        {log.event === "result_tracked" && <>
+          <span style={{ color: C.text }}>{log.data?.match}</span>{" "}
+          <span style={{ color: C.muted }}>{log.data?.score}</span>{" → "}
+          <span style={{ color: log.data?.outcome === "win" ? C.win : C.loss, fontWeight: 700 }}>
+            {log.data?.outcome?.toUpperCase()}
+          </span>
+        </>}
+        {log.event === "parlay_ready" && <>
+          <span style={{ color: C.pend }}>Parlay built</span>
+          <span style={{ color: C.muted }}> · {log.data?.match_count} matches</span>
+        </>}
+        {!["new_prediction","result_tracked","parlay_ready"].includes(log.event) &&
+          JSON.stringify(log.data).slice(0, 80)
+        }
       </div>
     </div>
   );
 };
 
-// ─── Parlay Panel ─────────────────────────────────────────────────────────────
-const ParlayPanel = ({ latestParlay }) => {
-  if (!latestParlay) return (
-    <div style={{ padding: "20px 0", textAlign: "center", color: C.muted, fontFamily: "JetBrains Mono", fontSize: 12 }}>
-      Waiting for next parlay analysis...
+// ── Parlay Panel ───────────────────────────────────────────────────────────────
+const ParlayPanel = ({ p }) => {
+  if (!p) return (
+    <div style={{ padding: "28px 0", textAlign: "center" }}>
+      <div style={{ fontSize: 28, marginBottom: 10 }}>🎰</div>
+      <div style={{ ...mono, fontSize: 11, color: C.muted }}>Waiting for next analysis...</div>
     </div>
   );
-
-  const sections = [
-    { key: "parlay_1x2", label: "1X2", icon: "🏆", color: C.accent },
-    { key: "parlay_ou",  label: "O/U", icon: "⚽", color: "#40D0E0" },
-    { key: "parlay_ah",  label: "AH",  icon: "⚖️", color: C.pending },
+  const secs = [
+    { key: "parlay_1x2", label: "1X2",  color: C.blue,   bg: "rgba(61,126,255,.06)"  },
+    { key: "parlay_ou",  label: "O/U",  color: C.cyan,   bg: "rgba(0,200,224,.06)"   },
+    { key: "parlay_ah",  label: "AH",   color: C.purple, bg: "rgba(139,92,246,.06)"  },
   ];
-
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      {sections.map(({ key, label, icon, color }) => {
-        const picks = latestParlay[key] || [];
+      {secs.map(({ key, label, color, bg }) => {
+        const picks = p[key] || [];
         if (!picks.length) return null;
         return (
-          <div key={key} className="parlay-panel" style={{ background: `${color}08`, borderColor: `${color}22` }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 10 }}>
-              <span style={{ fontSize: 15 }}>{icon}</span>
-              <span style={{ fontWeight: 700, fontSize: 13, color, letterSpacing: ".5px" }}>{label} PARLAY</span>
+          <div key={key} style={{ background: bg, border: `1px solid ${color}22`, borderRadius: 12, overflow: "hidden" }}>
+            <div style={{ padding: "8px 12px", borderBottom: `1px solid ${color}15`, display: "flex", alignItems: "center", gap: 7 }}>
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: color, boxShadow: `0 0 6px ${color}` }} />
+              <span style={{ ...mono, fontSize: 10, fontWeight: 700, color, letterSpacing: "1px" }}>{label} PARLAY</span>
+              <span style={{ ...mono, fontSize: 10, color: C.muted, marginLeft: "auto" }}>{picks.length} picks</span>
             </div>
-            {picks.map((p, i) => (
-              <div key={i} style={{
-                fontFamily: "JetBrains Mono", fontSize: 12, color: C.text,
-                padding: "5px 0", borderBottom: i < picks.length - 1 ? `1px solid ${C.border}33` : "none",
-                display: "flex", alignItems: "center", gap: 8,
-              }}>
-                <span style={{ color, fontSize: 10 }}>▸</span>
-                {p}
+            {picks.map((pick, i) => (
+              <div key={i} className="ppick">
+                <span style={{ color, fontSize: 9, marginTop: 2, flexShrink: 0 }}>▸</span>
+                <span>{pick}</span>
               </div>
             ))}
           </div>
         );
       })}
-      {latestParlay.warning && (
-        <div style={{
-          background: "rgba(255,71,87,.06)", border: "1px solid rgba(255,71,87,.2)",
-          borderRadius: 7, padding: "10px 12px",
-        }}>
-          <div style={{ fontSize: 11, color: C.loss, fontWeight: 700, letterSpacing: ".6px", marginBottom: 5 }}>
-            ⚠ CONTRARIAN WARNING
-          </div>
-          <div style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
-            {latestParlay.warning}
-          </div>
+      {p.warning && (
+        <div style={{ background: "rgba(255,61,90,.06)", border: "1px solid rgba(255,61,90,.2)", borderRadius: 10, padding: "10px 12px" }}>
+          <div style={{ ...mono, fontSize: 10, color: C.loss, fontWeight: 700, letterSpacing: ".7px", marginBottom: 6 }}>⚠ WARNING</div>
+          <div style={{ ...mono, fontSize: 11, color: C.sub, lineHeight: 1.6 }}>{p.warning}</div>
         </div>
       )}
     </div>
   );
 };
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// MAIN DASHBOARD
-// ═══════════════════════════════════════════════════════════════════════════════
+// ── Ticker ─────────────────────────────────────────────────────────────────────
+const Ticker = ({ preds }) => {
+  const recent = preds.filter(p => p.outcome).slice(0, 12);
+  if (!recent.length) return null;
+  const items = [...recent, ...recent];
+  return (
+    <div className="ticker-wrap">
+      <div className="ticker-inner">
+        {items.map((p, i) => (
+          <span key={i} style={{ ...mono, fontSize: 11, display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            <span style={{ color: C.sub }}>{p.match_name}</span>
+            <span style={{ color: p.outcome === "win" ? C.win : C.loss, fontWeight: 700 }}>
+              {p.outcome === "win" ? "WIN" : "LOSS"}
+            </span>
+            <span style={{ color: C.dim }}>·</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+};
 
+// ═════════════════════════════════════════════════════════════════════════════
 export default function Dashboard() {
-  const [stats,        setStats]        = useState(null);
-  const [predictions,  setPredictions]  = useState([]);
-  const [logs,         setLogs]         = useState([]);
-  const [tab,          setTab]          = useState("predictions");
-  const [schedule,     setSchedule]     = useState([]);
-  const [competition,  setCompetition]  = useState("PL");
-  const [loading,      setLoading]      = useState(true);
-  const [wsConnected,  setWsConnected]  = useState(false);
-  const [latestParlay, setLatestParlay] = useState(null);
+  const [stats,    setStats]    = useState(null);
+  const [preds,    setPreds]    = useState([]);
+  const [logs,     setLogs]     = useState([]);
+  const [tab,      setTab]      = useState("predictions");
+  const [schedule, setSchedule] = useState([]);
+  const [comp,     setComp]     = useState("PL");
+  const [loading,  setLoading]  = useState(true);
+  const [wsOk,     setWsOk]     = useState(false);
+  const [parlay,   setParlay]   = useState(null);
   const logsRef = useRef(null);
 
-  // ── data fetching ────────────────────────────────────────────────────────
   const load = useCallback(async () => {
     try {
       const [s, p] = await Promise.all([
         fetch(`${API}/api/stats`).then(r => r.json()),
-        fetch(`${API}/api/predictions?limit=30`).then(r => r.json()),
+        fetch(`${API}/api/predictions?limit=50`).then(r => r.json()),
       ]);
-      setStats(s);
-      setPredictions(p);
-    } catch (err) {
-      console.error("Load error:", err);
-    }
+      setStats(s); setPreds(p);
+    } catch {}
     setLoading(false);
   }, []);
 
-  const loadSchedule = useCallback(async (comp) => {
+  const loadSched = useCallback(async (c) => {
     try {
-      const data = await fetch(`${API}/api/schedule?competition=${comp}`).then(r => r.json());
-      setSchedule(data.matches || []);
-    } catch (err) {
-      console.error("Schedule error:", err);
-    }
+      const d = await fetch(`${API}/api/schedule?competition=${c}`).then(r => r.json());
+      setSchedule(d.matches || []);
+    } catch {}
   }, []);
 
-  // ── WebSocket ────────────────────────────────────────────────────────────
   useEffect(() => {
     load();
-
-    let ws;
-    let reconnectTimer;
-
+    let ws, timer;
     const connect = () => {
       ws = new WebSocket(WS);
-
-      ws.onopen  = () => setWsConnected(true);
-      ws.onclose = () => {
-        setWsConnected(false);
-        reconnectTimer = setTimeout(connect, 3000);  // auto-reconnect
-      };
+      ws.onopen  = () => setWsOk(true);
+      ws.onclose = () => { setWsOk(false); timer = setTimeout(connect, 3000); };
       ws.onerror = () => ws.close();
       ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
-        setLogs(prev => [msg, ...prev].slice(0, 120));
-
-        if (msg.event === "new_prediction" || msg.event === "result_tracked") {
-          load();
-        }
-        if (msg.event === "parlay_ready") {
-          setLatestParlay(msg.data);
-        }
+        setLogs(prev => [msg, ...prev].slice(0, 150));
+        if (["new_prediction","result_tracked"].includes(msg.event)) load();
+        if (msg.event === "parlay_ready") setParlay(msg.data);
       };
     };
-
     connect();
-    return () => {
-      clearTimeout(reconnectTimer);
-      ws?.close();
-    };
+    return () => { clearTimeout(timer); ws?.close(); };
   }, []);
 
-  useEffect(() => { loadSchedule(competition); }, [competition]);
-  useEffect(() => {
-    if (logsRef.current) logsRef.current.scrollTop = 0;
-  }, [logs]);
+  useEffect(() => { loadSched(comp); }, [comp]);
+  useEffect(() => { if (logsRef.current) logsRef.current.scrollTop = 0; }, [logs]);
 
-  // ── chart data ────────────────────────────────────────────────────────────
-  const resolved = predictions.filter(p => p.outcome);
-  const chartData = resolved.slice(0, 20).reverse().map((p, i) => ({
-    name: `#${p.id}`,
-    correct: p.outcome === "win" ? 1 : 0,
-    conf: p.confidence,
-  }));
-
-  const runningWR = chartData.map((_, i) => {
-    const slice = chartData.slice(0, i + 1);
-    const wr    = (slice.filter(x => x.correct).length / slice.length) * 100;
-    return { name: chartData[i].name, wr: Math.round(wr * 10) / 10 };
-  });
-
-  const o = stats?.overall;
+  const o   = stats?.overall;
   const fmt = (n) => n?.toFixed(1) ?? "—";
 
-  // ── loading state ─────────────────────────────────────────────────────────
+  const resolved = preds.filter(p => p.outcome);
+  const chartWR  = resolved.slice(0, 20).reverse().map((p, i, arr) => ({
+    name: `#${p.id}`,
+    wr: Math.round((arr.slice(0, i+1).filter(x => x.outcome === "win").length / (i+1)) * 1000) / 10,
+  }));
+  const btData = (stats?.by_bet_type ?? []).map(b => ({
+    name: b.bet_type, "Win Rate": b.win_rate, wins: b.wins, total: b.total,
+  }));
+  const btColor = { "1X2": C.blue, "OU": C.cyan, "AH": C.purple };
+
   if (loading) return (
     <>
-      <style>{GLOBAL_CSS}</style>
-      <div style={{ background: C.bg, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
-        <div style={{ fontFamily: "JetBrains Mono", color: C.accent, fontSize: 13, letterSpacing: "3px" }}>INITIALIZING</div>
-        <div style={{ display: "flex", gap: 6 }}>
+      <style>{G}</style>
+      <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 20 }}>
+        <div style={{ ...mono, color: C.blue, fontSize: 12, letterSpacing: "4px" }}>LOADING SYSTEM</div>
+        <div style={{ display: "flex", gap: 8 }}>
           {[0,1,2].map(i => (
-            <div key={i} style={{
-              width: 8, height: 8, borderRadius: "50%", background: C.accent,
-              animation: `pulse-anim 1.2s ease-in-out ${i * .2}s infinite`,
-            }} />
+            <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: C.blue, animation: `dpulse 1.2s ${i*.15}s ease-in-out infinite` }} />
           ))}
         </div>
       </div>
     </>
   );
 
-  // ─── render ──────────────────────────────────────────────────────────────
   return (
     <>
       <Head>
         <title>Parlay AI — WIN OR DIE 💀</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
       </Head>
-      <style>{GLOBAL_CSS}</style>
+      <style>{G}</style>
 
-      <div style={{ maxWidth: 1360, margin: "0 auto", padding: "24px 18px" }}>
+      <div style={{ maxWidth: 1400, margin: "0 auto", padding: "28px 20px 60px" }}>
 
-        {/* ── Header ──────────────────────────────────────────────────────── */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ fontSize: 24 }}>⚽</span>
-              <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-1px", color: C.text }}>
-                PARLAY AI
+        {/* HEADER */}
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <div style={{
+              width: 48, height: 48, borderRadius: 14,
+              background: "linear-gradient(135deg,#1a2a5e 0%,#0e1830 100%)",
+              border: `1px solid rgba(61,126,255,.3)`,
+              display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22,
+            }}>⚽</div>
+            <div>
+              <h1 style={{ fontSize: 26, fontWeight: 700, letterSpacing: "-1px", lineHeight: 1 }}>
+                Parlay <span style={{ color: C.blue }}>AI</span>
               </h1>
-              <span style={{
-                fontFamily: "JetBrains Mono", fontSize: 10, fontWeight: 700,
-                color: C.accent, letterSpacing: "2px",
-                background: C.accentDim, padding: "2px 8px", borderRadius: 4,
-                border: `1px solid ${C.accent}33`,
-              }}>
-                v6
-              </span>
-            </div>
-            <div style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: C.muted, marginTop: 3, letterSpacing: ".5px" }}>
-              WIN THE PARLAY OR WE DIE 💀
+              <div style={{ ...mono, fontSize: 10, color: C.muted, letterSpacing: "2px", marginTop: 4 }}>
+                WIN THE PARLAY OR WE DIE 💀
+              </div>
             </div>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
-            {/* win rate ring */}
+          <div style={{ display: "flex", alignItems: "center", gap: 24, marginTop: 6 }}>
             <div style={{ textAlign: "right" }}>
-              <div style={{ fontFamily: "JetBrains Mono", fontSize: 22, fontWeight: 700, color: C.win, letterSpacing: "-1px" }}>
+              <div style={{ ...mono, fontSize: 32, fontWeight: 700, color: C.win, letterSpacing: "-2px", lineHeight: 1 }}>
                 {fmt(o?.win_rate ?? 0)}%
               </div>
-              <div style={{ fontFamily: "JetBrains Mono", fontSize: 10, color: C.muted, letterSpacing: ".8px" }}>WIN RATE</div>
+              <div style={{ ...mono, fontSize: 9, color: C.muted, letterSpacing: "2px", marginTop: 4 }}>WIN RATE</div>
             </div>
-
-            {/* WS status */}
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <div style={{
-                width: 7, height: 7, borderRadius: "50%",
-                background: wsConnected ? C.win : C.loss,
-                boxShadow: wsConnected ? `0 0 8px ${C.win}88` : "none",
-                animation: wsConnected ? "pulse-anim 1.8s infinite" : "none",
-              }} />
-              <span style={{ fontFamily: "JetBrains Mono", fontSize: 10, color: C.muted, letterSpacing: "1px" }}>
-                {wsConnected ? "LIVE" : "RECONNECTING"}
-              </span>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingLeft: 24, borderLeft: `1px solid ${C.border}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <div className={`dot ${wsOk ? "" : "dot-off"}`} />
+                <span style={{ ...mono, fontSize: 9, color: C.sub, letterSpacing: "1.5px" }}>{wsOk ? "LIVE" : "OFFLINE"}</span>
+              </div>
+              <div style={{ ...mono, fontSize: 9, color: C.muted }}>{logs.length} events</div>
             </div>
           </div>
         </div>
 
-        <div className="header-line" />
-
-        {/* ── Stat row ────────────────────────────────────────────────────── */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 18 }}>
-          <StatCard value={o?.total_predictions ?? 0} label="Total"    icon="📊" color={C.text} />
-          <StatCard value={o?.wins ?? 0}               label="Wins"     icon="✅" color={C.win} />
-          <StatCard value={o?.losses ?? 0}             label="Losses"   icon="❌" color={C.loss} />
-          <StatCard value={o?.pending ?? 0}            label="Pending"  icon="⏳" color={C.pending} />
-          <StatCard value={`${fmt(o?.win_rate ?? 0)}%`} label="Win Rate" icon="🎯" color={C.win} />
+        {/* TICKER */}
+        <div style={{ marginTop: 20, marginBottom: 0 }}>
+          <Ticker preds={preds} />
         </div>
 
-        {/* ── Charts row ──────────────────────────────────────────────────── */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
-          {/* Win rate over time */}
-          <div className="card" style={{ padding: "18px 20px" }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, letterSpacing: "1px", textTransform: "uppercase", marginBottom: 14, fontFamily: "JetBrains Mono" }}>
-              📈 Running Win Rate
+        {/* STAT CARDS */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 20 }}>
+          <StatCard value={o?.total_predictions ?? 0} label="Total Predictions" icon="📊" color={C.blue} />
+          <StatCard value={o?.wins ?? 0}              label="Total Wins"         icon="✅" color={C.win} />
+          <StatCard value={o?.losses ?? 0}            label="Total Losses"       icon="❌" color={C.loss} />
+          <StatCard value={o?.pending ?? 0}           label="Pending"            icon="⏳" color={C.pend} />
+          <StatCard
+            value={`${resolved.length > 0 ? Math.round(resolved.filter(p=>p.outcome==="win").length/resolved.length*1000)/10 : 0}%`}
+            label="Resolved Rate" icon="🎯" color={C.cyan}
+          />
+        </div>
+
+        {/* CHARTS */}
+        <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 14, marginBottom: 20 }}>
+          <div className="card" style={{ padding: "20px 24px" }}>
+            <div className="sh" style={{ marginBottom: 18 }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: C.blue, display: "inline-block", boxShadow: `0 0 8px ${C.blue}` }} />
+              Running Win Rate
             </div>
-            <ResponsiveContainer width="100%" height={150}>
-              <AreaChart data={runningWR}>
-                <defs>
-                  <linearGradient id="wrGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%"  stopColor={C.accent} stopOpacity={.25} />
-                    <stop offset="95%" stopColor={C.accent} stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                <XAxis dataKey="name" tick={{ fill: C.dim, fontSize: 9, fontFamily: "JetBrains Mono" }} />
-                <YAxis domain={[0, 100]} tick={{ fill: C.dim, fontSize: 9, fontFamily: "JetBrains Mono" }} />
-                <Tooltip content={<ChartTooltip />} />
-                <Area type="monotone" dataKey="wr" stroke={C.accent} strokeWidth={2}
-                  fill="url(#wrGrad)" dot={false} activeDot={{ r: 4, fill: C.accent }} />
-              </AreaChart>
-            </ResponsiveContainer>
+            {chartWR.length === 0
+              ? <div style={{ height: 160, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <span style={{ ...mono, fontSize: 11, color: C.muted }}>No resolved predictions yet</span>
+                </div>
+              : <ResponsiveContainer width="100%" height={160}>
+                  <AreaChart data={chartWR} margin={{ top: 4, right: 4, bottom: 0, left: -16 }}>
+                    <defs>
+                      <linearGradient id="wrG" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%"   stopColor={C.blue} stopOpacity={.28} />
+                        <stop offset="100%" stopColor={C.blue} stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="2 4" stroke={C.dim} vertical={false} />
+                    <XAxis dataKey="name" tick={{ fill: C.muted, fontSize: 9, fontFamily: "Space Mono" }} axisLine={false} tickLine={false} />
+                    <YAxis domain={[0,100]} tick={{ fill: C.muted, fontSize: 9, fontFamily: "Space Mono" }} axisLine={false} tickLine={false} />
+                    <Tooltip content={<CTip />} cursor={{ stroke: C.borderHi, strokeWidth: 1, strokeDasharray: "3 3" }} />
+                    <Area type="monotone" dataKey="wr" name="Win %" stroke={C.blue} strokeWidth={2}
+                      fill="url(#wrG)" dot={false}
+                      activeDot={{ r: 5, fill: C.blue, stroke: C.card, strokeWidth: 2 }}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+            }
           </div>
 
-          {/* Win rate by bet type */}
-          <div className="card" style={{ padding: "18px 20px" }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, letterSpacing: "1px", textTransform: "uppercase", marginBottom: 14, fontFamily: "JetBrains Mono" }}>
-              🎯 Win Rate by Bet Type
+          <div className="card" style={{ padding: "20px 24px" }}>
+            <div className="sh" style={{ marginBottom: 18 }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: C.cyan, display: "inline-block", boxShadow: `0 0 8px ${C.cyan}` }} />
+              Win Rate by Bet Type
             </div>
-            <ResponsiveContainer width="100%" height={150}>
-              <BarChart data={stats?.by_bet_type ?? []} barSize={32}>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                <XAxis dataKey="bet_type" tick={{ fill: C.dim, fontSize: 11, fontFamily: "JetBrains Mono" }} />
-                <YAxis domain={[0, 100]} tick={{ fill: C.dim, fontSize: 9, fontFamily: "JetBrains Mono" }} />
-                <Tooltip content={<ChartTooltip />} />
-                <Bar dataKey="win_rate" fill={C.accent} radius={[5,5,0,0]}
-                  label={{ position: "top", fontSize: 10, fill: C.muted, fontFamily: "JetBrains Mono" }} />
-              </BarChart>
-            </ResponsiveContainer>
+            {btData.length === 0
+              ? <div style={{ height: 160, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <span style={{ ...mono, fontSize: 11, color: C.muted }}>No data yet</span>
+                </div>
+              : <ResponsiveContainer width="100%" height={160}>
+                  <BarChart data={btData} barSize={42} margin={{ top: 4, right: 4, bottom: 0, left: -16 }}>
+                    <CartesianGrid strokeDasharray="2 4" stroke={C.dim} vertical={false} />
+                    <XAxis dataKey="name" tick={{ fill: C.sub, fontSize: 11, fontFamily: "Space Mono" }} axisLine={false} tickLine={false} />
+                    <YAxis domain={[0,100]} tick={{ fill: C.muted, fontSize: 9, fontFamily: "Space Mono" }} axisLine={false} tickLine={false} />
+                    {/* custom content prop = no white box */}
+                    <Tooltip content={<CTip />} cursor={{ fill: "rgba(255,255,255,.025)", radius: 6 }} />
+                    <Bar dataKey="Win Rate" radius={[7,7,0,0]}>
+                      {btData.map((entry, i) => (
+                        <Cell key={i}
+                          fill={btColor[entry.name] || C.blue}
+                          style={{ filter: `drop-shadow(0 0 8px ${btColor[entry.name] || C.blue}44)` }}
+                        />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+            }
+            <div style={{ display: "flex", gap: 16, marginTop: 14, justifyContent: "center" }}>
+              {Object.entries(btColor).map(([k, v]) => (
+                <div key={k} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: 2, background: v, boxShadow: `0 0 6px ${v}88` }} />
+                  <span style={{ ...mono, fontSize: 10, color: C.sub }}>{k}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
-        {/* ── Main 3-col layout ───────────────────────────────────────────── */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 320px", gap: 12 }}>
+        {/* MAIN 3-COL */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 300px", gap: 14 }}>
 
-          {/* LEFT: Predictions / Schedule */}
           <div style={{ gridColumn: "1 / 3" }}>
-            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-              <button className={`tab-btn ${tab === "predictions" ? "active" : "inactive"}`} onClick={() => setTab("predictions")}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
+              <button className={`tab ${tab === "predictions" ? "tab-on" : "tab-off"}`} onClick={() => setTab("predictions")}>
                 📊 Predictions
               </button>
-              <button className={`tab-btn ${tab === "schedule" ? "active" : "inactive"}`} onClick={() => setTab("schedule")}>
+              <button className={`tab ${tab === "schedule" ? "tab-on" : "tab-off"}`} onClick={() => setTab("schedule")}>
                 📅 Schedule
               </button>
+              {tab === "predictions" && (
+                <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+                  <span className="badge bw">{resolved.length} resolved</span>
+                  <span className="badge bp">{o?.pending ?? 0} pending</span>
+                </div>
+              )}
             </div>
 
-            {/* Predictions table */}
-            {tab === "predictions" && (
-              <div className="card" style={{ overflow: "hidden" }}>
-                <table className="data-table">
+            <div className="card" style={{ overflow: "hidden" }}>
+              {tab === "predictions" && (
+                <table className="tbl">
                   <thead>
-                    <tr>
-                      <th>Match</th>
-                      <th>Type</th>
-                      <th>Pick</th>
-                      <th>Conf</th>
-                      <th>Parlay</th>
-                      <th>Result</th>
-                      <th>Score</th>
-                    </tr>
+                    <tr><th>Match</th><th>Type</th><th>Pick</th><th>Conf</th><th>Parlay</th><th>Result</th><th>Score</th></tr>
                   </thead>
                   <tbody>
-                    {predictions.map(p => (
+                    {preds.map(p => (
                       <tr key={p.id}>
                         <td>
                           <div style={{ fontWeight: 600, fontSize: 13 }}>{p.match_name}</div>
-                          <div style={{ fontFamily: "JetBrains Mono", fontSize: 10, color: C.muted, marginTop: 2 }}>
-                            {new Date(p.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}
+                          <div style={{ ...mono, fontSize: 10, color: C.muted, marginTop: 2 }}>
+                            {new Date(p.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}
                           </div>
                         </td>
                         <td>
-                          <span className={`badge b-${p.bet_type.toLowerCase()}`}>{p.bet_type}</span>
+                          <span className={`badge ${p.bet_type==="1X2"?"b1":p.bet_type==="OU"?"bo":"ba"}`}>{p.bet_type}</span>
                         </td>
-                        <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: C.text, maxWidth: 160 }}>
-                          {p.predicted_pick}
-                        </td>
+                        <td style={{ ...mono, fontSize: 12, maxWidth: 160, color: C.text }}>{p.predicted_pick}</td>
                         <td><ConfBar val={p.confidence} /></td>
                         <td>
                           {p.include_in_parlay
-                            ? <span style={{ fontSize: 13 }}>✅</span>
-                            : <span className="badge b-skip">SKIP</span>
+                            ? <span style={{ color: C.win, fontSize: 16 }}>✓</span>
+                            : <span className="badge bs">SKIP</span>
                           }
                         </td>
                         <td>
                           {p.outcome
-                            ? <span className={`badge b-${p.outcome}`}>{p.outcome.toUpperCase()}</span>
-                            : <span className="badge b-pending">PENDING</span>
+                            ? <span className={`badge ${p.outcome==="win"?"bw":"bl"}`}>{p.outcome.toUpperCase()}</span>
+                            : <span className="badge bp">PENDING</span>
                           }
                         </td>
-                        <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: C.muted }}>
-                          {p.actual_result ?? "—"}
-                        </td>
+                        <td style={{ ...mono, fontSize: 12, color: C.sub }}>{p.actual_result ?? "—"}</td>
                       </tr>
                     ))}
-                    {predictions.length === 0 && (
+                    {preds.length === 0 && (
                       <tr>
-                        <td colSpan={7} style={{ textAlign: "center", padding: 32, color: C.muted, fontFamily: "JetBrains Mono", fontSize: 12 }}>
-                          No predictions yet. Send matches via Telegram to start.
+                        <td colSpan={7} style={{ textAlign: "center", padding: 40, ...mono, fontSize: 11, color: C.muted }}>
+                          No predictions yet — send matches via Telegram to start
                         </td>
                       </tr>
                     )}
                   </tbody>
                 </table>
-              </div>
-            )}
+              )}
 
-            {/* Schedule */}
-            {tab === "schedule" && (
-              <div className="card" style={{ overflow: "hidden" }}>
-                <div style={{ padding: "14px 16px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: C.muted }}>COMPETITION</span>
-                  <select className="comp-select" value={competition} onChange={e => setCompetition(e.target.value)}>
-                    {["PL","CL","PD","SA","BL1","FL1","ELC","PPL","DED"].map(c => <option key={c}>{c}</option>)}
-                  </select>
-                </div>
-                <table className="data-table">
-                  <thead>
-                    <tr><th>Home</th><th>Away</th><th>Competition</th><th>Kickoff</th></tr>
-                  </thead>
-                  <tbody>
-                    {schedule.map((m, i) => (
-                      <tr key={i}>
-                        <td style={{ fontWeight: 600 }}>{m.home}</td>
-                        <td style={{ fontWeight: 600 }}>{m.away}</td>
-                        <td style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: C.muted }}>{m.competition}</td>
-                        <td style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: C.muted }}>
-                          {new Date(m.kickoff).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
-                        </td>
-                      </tr>
-                    ))}
-                    {schedule.length === 0 && (
-                      <tr>
-                        <td colSpan={4} style={{ textAlign: "center", padding: 32, color: C.muted, fontFamily: "JetBrains Mono", fontSize: 12 }}>
-                          No upcoming matches
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            )}
+              {tab === "schedule" && (
+                <>
+                  <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ ...mono, fontSize: 10, color: C.muted, letterSpacing: "1px" }}>COMPETITION</span>
+                    <select className="sel" value={comp} onChange={e => setComp(e.target.value)}>
+                      {["PL","CL","PD","SA","BL1","FL1","ELC","PPL","DED"].map(c => <option key={c}>{c}</option>)}
+                    </select>
+                    <span style={{ ...mono, fontSize: 10, color: C.muted, marginLeft: "auto" }}>{schedule.length} matches</span>
+                  </div>
+                  <table className="tbl">
+                    <thead><tr><th>Home</th><th>Away</th><th>League</th><th>Kickoff</th></tr></thead>
+                    <tbody>
+                      {schedule.map((m, i) => (
+                        <tr key={i}>
+                          <td style={{ fontWeight: 600 }}>{m.home}</td>
+                          <td style={{ fontWeight: 600 }}>{m.away}</td>
+                          <td style={{ ...mono, fontSize: 10, color: C.muted }}>{m.competition}</td>
+                          <td style={{ ...mono, fontSize: 11, color: C.sub }}>
+                            {new Date(m.kickoff).toLocaleString("en-GB", { day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" })}
+                          </td>
+                        </tr>
+                      ))}
+                      {schedule.length === 0 && (
+                        <tr><td colSpan={4} style={{ textAlign: "center", padding: 40, ...mono, fontSize: 11, color: C.muted }}>No upcoming matches</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </>
+              )}
+            </div>
           </div>
 
-          {/* RIGHT: Live logs + Parlay */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-
-            {/* Live log feed */}
-            <div className="card" style={{ display: "flex", flexDirection: "column", height: 360 }}>
-              <div style={{ padding: "14px 16px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-                <div className="pulse-dot" style={{ background: wsConnected ? C.win : C.dim }} />
-                <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: ".5px" }}>Live Feed</span>
-                <span style={{ fontFamily: "JetBrains Mono", fontSize: 10, color: C.muted, marginLeft: "auto" }}>
-                  {logs.length} events
-                </span>
+          {/* RIGHT */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {/* Live feed */}
+            <div className="card" style={{ display: "flex", flexDirection: "column", height: 380 }}>
+              <div style={{ padding: "14px 16px", borderBottom: `1px solid ${C.border}`, flexShrink: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                <div className={`dot ${wsOk ? "" : "dot-off"}`} />
+                <span style={{ fontWeight: 600, fontSize: 13 }}>Live Feed</span>
+                <span style={{ ...mono, fontSize: 10, color: C.muted, marginLeft: "auto" }}>{logs.length} / 150</span>
               </div>
-              <div ref={logsRef} style={{
-                flex: 1, overflowY: "auto", padding: "10px",
-                display: "flex", flexDirection: "column", gap: 7,
-              }}>
-                {logs.length === 0 && (
-                  <div style={{ textAlign: "center", padding: "30px 0", color: C.muted, fontFamily: "JetBrains Mono", fontSize: 11 }}>
-                    Waiting for AI activity...
-                  </div>
-                )}
-                {logs.map((log, i) => <LogCard key={i} log={log} />)}
+              <div ref={logsRef} style={{ flex: 1, overflowY: "auto", padding: 10, display: "flex", flexDirection: "column", gap: 7 }}>
+                {logs.length === 0
+                  ? <div style={{ textAlign: "center", padding: "32px 0", ...mono, fontSize: 11, color: C.muted }}>Waiting for AI activity...</div>
+                  : logs.map((l, i) => <LogCard key={i} log={l} />)
+                }
               </div>
             </div>
 
-            {/* Latest parlay */}
+            {/* Parlay */}
             <div className="card" style={{ flexShrink: 0 }}>
               <div style={{ padding: "14px 16px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 14 }}>🏆</span>
-                <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: ".5px" }}>Latest Parlay</span>
+                <span style={{ fontSize: 15 }}>🏆</span>
+                <span style={{ fontWeight: 600, fontSize: 13 }}>Latest Parlay</span>
+                {parlay && <span style={{ ...mono, fontSize: 9, color: C.pend, marginLeft: "auto", letterSpacing: "1px" }}>● FRESH</span>}
               </div>
-              <div style={{ padding: "12px" }}>
-                <ParlayPanel latestParlay={latestParlay} />
-              </div>
+              <div style={{ padding: 12 }}><ParlayPanel p={parlay} /></div>
             </div>
-
           </div>
+
         </div>
 
-        {/* ── Footer ──────────────────────────────────────────────────────── */}
-        <div style={{ marginTop: 24, textAlign: "center", fontFamily: "JetBrains Mono", fontSize: 10, color: C.dim, letterSpacing: ".5px" }}>
-          PARLAY AI • FOR ENTERTAINMENT ONLY • BET RESPONSIBLY
+        {/* FOOTER */}
+        <div style={{ marginTop: 44, textAlign: "center", ...mono, fontSize: 10, color: C.muted, letterSpacing: "1px" }}>
+          PARLAY AI v3 · FOR ENTERTAINMENT ONLY · BET RESPONSIBLY
         </div>
-
       </div>
     </>
   );
