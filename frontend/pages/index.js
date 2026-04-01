@@ -347,7 +347,7 @@ const AIFlowDiagram = () => {
   const [active, setActive] = useState(null);
 
   const nodes = {
-    api:      { label: "TheSportsDB API", sub: "PL · PD · SA · BL1 · FL1 · UCL · UEL · ELC · PPL · DED · ALG · BSA · MLS", color: T.sub,    glow: "#3A4A63" },
+    api:      { label: "TheSportsDB API", sub: "PL · PD · SA · BL1 · FL1 · UCL · UEL · ELC · PPL · DED · BSA · MLS", color: T.sub,    glow: "#3A4A63" },
     prep:     { label: "Preprocessing & Cache", sub: "Rate-limit · 15 min cache · TTL guard", color: T.cyan,   glow: "#00D4F0" },
     stat:     { label: "Agent Statistik", sub: "Form & historis tim",       color: T.purple, glow: "#A97FF5" },
     odds:     { label: "Agent Odds",     sub: "Value bet evaluation",       color: T.purple, glow: "#A97FF5" },
@@ -558,7 +558,7 @@ const AIFlowDiagram = () => {
 
       {/* League pills */}
       <div style={{ padding: "10px 16px 16px", display: "flex", flexWrap: "wrap", gap: 6 }}>
-        {["PL","PD","SA","BL1","FL1","UCL","UEL","ELC","PPL","DED","ALG","BSA","MLS"].map(c => (
+        {["PL","PD","SA","BL1","FL1","UCL","UEL","ELC","PPL","DED","BSA","MLS"].map(c => (
           <span key={c} style={{
             fontFamily:"'JetBrains Mono',monospace", fontSize: 9, fontWeight: 700,
             padding: "3px 9px", borderRadius: 6, letterSpacing: ".8px",
@@ -786,7 +786,7 @@ export default function Dashboard() {
   const [logs,     setLogs]     = useState([]);
   const [tab,      setTab]      = useState("overview");  // overview | predictions | schedule | feed | parlay
   const [schedule, setSchedule] = useState([]);
-  const [comp,     setComp]     = useState("ALL");
+  const [comp,     setComp]     = useState("PL");
   const [loading,  setLoading]  = useState(true);
   const [wsOk,     setWsOk]     = useState(false);
   const [parlay,   setParlay]   = useState(null);
@@ -828,7 +828,7 @@ export default function Dashboard() {
 
     // ── FALLBACK: build popup dari prediksi pending + semua jadwal ──
     // Ambil jadwal dari semua liga yang disupport
-    const comps = ["PL","PD","SA","BL1","FL1","UCL","UEL","ELC","PPL","DED","ALG","BSA","MLS"];
+    const comps = ["PL","PD","SA","BL1","FL1","UCL","UEL","ELC","PPL","DED","BSA","MLS"];
     const allMatches = [];
     await Promise.all(comps.map(async c => {
       try {
@@ -878,10 +878,7 @@ export default function Dashboard() {
 
   const loadSched = useCallback(async (c) => {
     try {
-      const url = c === "ALL"
-        ? `${API}/api/schedule/all`
-        : `${API}/api/schedule?competition=${c}&days=14`;
-      const r = await fetch(url);
+      const r = await fetch(`${API}/api/schedule?competition=${c}`);
       if (!r.ok) { console.warn("schedule fetch failed:", r.status); return; }
       const d = await r.json();
       setSchedule(d.matches || []);
@@ -1281,13 +1278,10 @@ export default function Dashboard() {
                 <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, letterSpacing: "1px" }}>COMPETITION</span>
                 <div style={{ position: "relative" }}>
                   <select className="sel" value={comp} onChange={e => setComp(e.target.value)}>
-                    <option value="ALL">⚡ ALL COMPETITIONS</option>
-                    {["PL","PD","SA","BL1","FL1","UCL","UEL","ELC","PPL","DED","ALG","BSA","MLS"].map(c => <option key={c} value={c}>{c}</option>)}
+                    {["PL","PD","SA","BL1","FL1","UCL","UEL","ELC","PPL","DED","BSA","MLS"].map(c => <option key={c}>{c}</option>)}
                   </select>
                 </div>
-                <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, marginLeft: "auto" }}>
-                  {comp === "ALL" ? `${schedule.length} matches · all leagues` : `${schedule.length} matches`}
-                </span>
+                <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, marginLeft: "auto" }}>{schedule.length} matches</span>
               </div>
               {schedule.length === 0
                 ? <EmptyState icon="📅" title="Tidak ada jadwal" desc="Pilih kompetisi lain atau cek API key" />
@@ -1358,7 +1352,7 @@ export default function Dashboard() {
             {/* Extra info cards */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }} className="stat-grid">
               {[
-                { icon: "🌍", title: "12 Liga Didukung", desc: "PL · PD · SA · BL1 · FL1 · UCL · UEL · ELC · PPL · DED · ALG · BSA · MLS — semua FREE via TheSportsDB", color: T.accent },
+                { icon: "🌍", title: "12 Liga Didukung", desc: "PL · PD · SA · BL1 · FL1 · UCL · UEL · ELC · PPL · DED · BSA · MLS — semua FREE via TheSportsDB", color: T.accent },
                 { icon: "🤖", title: "Multi-Agent Debate", desc: "3 AI agents berdebat setiap prediksi — statistik, odds value, dan konteks situasional", color: T.purple },
                 { icon: "📈", title: "Self-Learning", desc: "Sistem belajar dari hasil aktual dan otomatis update bobot agent untuk akurasi yang terus meningkat", color: T.win },
               ].map((c, i) => (
