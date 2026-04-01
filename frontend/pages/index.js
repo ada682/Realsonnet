@@ -342,6 +342,239 @@ const Ticker = ({ preds }) => {
   );
 };
 
+/* ─── AI FLOW DIAGRAM (How It Works) ─────────────────────────────────────── */
+const AIFlowDiagram = () => {
+  const [active, setActive] = useState(null);
+
+  const nodes = {
+    api:      { label: "TheSportsDB API", sub: "PL · PD · SA · BL1 · FL1 · UCL · UEL · ELC · PPL · DED · BSA · MLS", color: T.sub,    glow: "#3A4A63" },
+    prep:     { label: "Preprocessing & Cache", sub: "Rate-limit · 15 min cache · TTL guard", color: T.cyan,   glow: "#00D4F0" },
+    stat:     { label: "Agent Statistik", sub: "Form & historis tim",       color: T.purple, glow: "#A97FF5" },
+    odds:     { label: "Agent Odds",     sub: "Value bet evaluation",       color: T.purple, glow: "#A97FF5" },
+    ctx:      { label: "Agent Konteks", sub: "Cedera · cuaca · motivasi",  color: T.purple, glow: "#A97FF5" },
+    debate:   { label: "Debate Engine", sub: "Multi-agent voting → confidence score", color: T.pend,   glow: "#FFBA35" },
+    learning: { label: "Learning Engine", sub: "SQLite · update bobot dari hasil aktual", color: "#FF6B6B", glow: "#FF4060" },
+    pred:     { label: "Prediksi (1X2/OU/AH)", sub: "Confidence % per bet type",   color: T.accent, glow: "#4F8EFF" },
+    parlay:   { label: "Parlay Builder", sub: "Gabung picks value tinggi",  color: T.win,    glow: "#00E09A" },
+    tg:       { label: "Telegram Bot",   sub: "Push notifikasi real-time",  color: T.accent, glow: "#4F8EFF" },
+    web:      { label: "Dashboard Web",  sub: "Live feed · winrate · jadwal", color: T.win,  glow: "#00E09A" },
+  };
+
+  const info = {
+    api:      "TheSportsDB (free key=123) menyediakan fixtures, hasil, dan info tim untuk 12 liga yang didukung. Data di-cache 15 menit untuk menghindari rate-limit.",
+    prep:     "Data mentah dari API difilter, dinormalisasi, dan di-cache. Tim yang tidak dikenali sistem diberi TTL 24 jam sebelum otomatis dihapus.",
+    stat:     "Agent ini menganalisa statistik historis: performa kandang/tandang, head-to-head, dan form 5 pertandingan terakhir.",
+    odds:     "Agent evaluasi value bet — apakah odds yang ditawarkan sepadan dengan probabilitas yang diprediksikan AI.",
+    ctx:      "Informasi kontekstual: apakah ada pemain cedera kunci? Pertandingan dengan taruhan tinggi? Kondisi cuaca ekstrem?",
+    debate:   "Tiga agent berdebat dan saling berargumen. Sistem voting konsensus menghasilkan prediksi final beserta confidence score 0–100%.",
+    learning: "Setelah pertandingan selesai, hasil aktual dibandingkan dengan prediksi. Bobot setiap agent diperbarui otomatis untuk meningkatkan akurasi.",
+    pred:     "Output prediksi dalam 3 jenis taruhan: 1X2 (hasil akhir), OU (over/under gol), AH (asian handicap). Setiap prediksi punya confidence % sendiri.",
+    parlay:   "Picks dengan confidence tertinggi digabungkan menjadi satu paket parlay dengan potensi odds lebih besar.",
+    tg:       "Bot Telegram mengirimkan notifikasi real-time setiap ada prediksi baru, hasil match, atau parlay siap.",
+    web:      "Dashboard ini — live feed via WebSocket, winrate chart, tabel prediksi, dan jadwal pertandingan.",
+  };
+
+  const T2 = T; // alias for closure
+
+  const NodeBox = ({ id, x, y, w = 200 }) => {
+    const n = nodes[id];
+    const isActive = active === id;
+    return (
+      <g
+        onClick={() => setActive(active === id ? null : id)}
+        style={{ cursor: "pointer" }}
+      >
+        <rect
+          x={x} y={y} width={w} height={54} rx={10}
+          fill={isActive ? `${n.glow}25` : "rgba(255,255,255,0.03)"}
+          stroke={isActive ? n.glow : "rgba(255,255,255,0.08)"}
+          strokeWidth={isActive ? 1.5 : 0.5}
+          style={{ transition: "all .2s" }}
+        />
+        {isActive && (
+          <rect x={x} y={y} width={w} height={2} rx={1} fill={n.glow} opacity={0.9} />
+        )}
+        <text
+          x={x + w/2} y={y + 19}
+          textAnchor="middle"
+          fill={n.color}
+          fontFamily="'JetBrains Mono', monospace"
+          fontSize={10} fontWeight={700} letterSpacing={0.5}
+        >{n.label}</text>
+        <text
+          x={x + w/2} y={y + 36}
+          textAnchor="middle"
+          fill={T2.muted}
+          fontFamily="'DM Sans', sans-serif"
+          fontSize={9}
+        >{n.sub}</text>
+      </g>
+    );
+  };
+
+  const Arrow = ({ x1, y1, x2, y2, color = T.muted, dash = false, delay = 0 }) => (
+    <line
+      x1={x1} y1={y1} x2={x2} y2={y2}
+      stroke={color} strokeWidth={1}
+      strokeDasharray={dash ? "5 3" : "6 3"}
+      fill="none"
+      markerEnd="url(#arr)"
+      style={{ animation: `flowAnim 2s ${delay}s linear infinite` }}
+    />
+  );
+
+  const activeInfo = active ? info[active] : null;
+  const activeNode = active ? nodes[active] : null;
+
+  return (
+    <div className="glass" style={{ padding: 0, overflow: "hidden" }}>
+      {/* Header */}
+      <div style={{ padding: "14px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ fontSize: 14 }}>🧠</span>
+        <span style={{ fontWeight: 700, fontSize: 15 }}>Cara Kerja AI Analisis</span>
+        <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 9, color: T.muted, marginLeft: "auto", letterSpacing: "1px" }}>
+          KLIK NODE UNTUK DETAIL
+        </span>
+      </div>
+
+      {/* Info panel */}
+      {activeInfo && (
+        <div style={{
+          margin: "12px 16px 0",
+          background: `${activeNode.glow}12`,
+          border: `1px solid ${activeNode.glow}30`,
+          borderRadius: 10, padding: "10px 14px",
+          display: "flex", gap: 10, alignItems: "flex-start",
+          animation: "lslide .2s ease",
+        }}>
+          <div style={{ width: 3, borderRadius: 2, background: activeNode.glow, alignSelf: "stretch", flexShrink: 0 }} />
+          <div>
+            <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 9, fontWeight: 700, color: activeNode.glow, letterSpacing: "1px", marginBottom: 5 }}>
+              {activeNode.label.toUpperCase()}
+            </div>
+            <div style={{ fontFamily:"'DM Sans',sans-serif", fontSize: 12, color: T.sub, lineHeight: 1.7 }}>{activeInfo}</div>
+          </div>
+        </div>
+      )}
+
+      {/* SVG Diagram */}
+      <div style={{ padding: "12px 16px 16px", overflowX: "auto" }}>
+        <svg width="100%" viewBox="0 0 700 610" style={{ minWidth: 560 }}>
+          <defs>
+            <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M2 2L8 5L2 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </marker>
+            <style>{`
+              @keyframes flowAnim { from { stroke-dashoffset: 18; } to { stroke-dashoffset: 0; } }
+              @keyframes blip { 0%,100%{opacity:1}50%{opacity:.3} }
+              .blip-dot { animation: blip 2s ease-in-out infinite; }
+            `}</style>
+          </defs>
+
+          {/* ── ROW 0: API ── */}
+          <NodeBox id="api" x={220} y={12} w={260} />
+
+          {/* api → prep */}
+          <line x1={350} y1={66} x2={350} y2={98} stroke={T.muted} strokeWidth={1} strokeDasharray="6 3"
+            fill="none" markerEnd="url(#arr)" style={{ animation: "flowAnim 1.8s linear infinite" }} />
+
+          {/* ── ROW 1: PREPROCESS ── */}
+          <NodeBox id="prep" x={175} y={98} w={350} />
+
+          {/* prep → 3 agents */}
+          <line x1={260} y1={152} x2={140} y2={194} stroke={T.cyan} strokeWidth={1} strokeDasharray="6 3"
+            fill="none" markerEnd="url(#arr)" style={{ animation: "flowAnim 1.6s .2s linear infinite" }} />
+          <line x1={350} y1={152} x2={350} y2={194} stroke={T.cyan} strokeWidth={1} strokeDasharray="6 3"
+            fill="none" markerEnd="url(#arr)" style={{ animation: "flowAnim 1.6s .4s linear infinite" }} />
+          <line x1={440} y1={152} x2={560} y2={194} stroke={T.cyan} strokeWidth={1} strokeDasharray="6 3"
+            fill="none" markerEnd="url(#arr)" style={{ animation: "flowAnim 1.6s .6s linear infinite" }} />
+
+          {/* ── ROW 2: AGENTS ── */}
+          <NodeBox id="stat" x={30}  y={194} w={190} />
+          <NodeBox id="odds" x={255} y={194} w={190} />
+          <NodeBox id="ctx"  x={480} y={194} w={190} />
+
+          {/* agents → debate */}
+          <line x1={125} y1={248} x2={260} y2={290} stroke={T.purple} strokeWidth={1} strokeDasharray="6 3"
+            fill="none" markerEnd="url(#arr)" style={{ animation: "flowAnim 2s .1s linear infinite" }} />
+          <line x1={350} y1={248} x2={350} y2={290} stroke={T.purple} strokeWidth={1} strokeDasharray="6 3"
+            fill="none" markerEnd="url(#arr)" style={{ animation: "flowAnim 2s .3s linear infinite" }} />
+          <line x1={575} y1={248} x2={440} y2={290} stroke={T.purple} strokeWidth={1} strokeDasharray="6 3"
+            fill="none" markerEnd="url(#arr)" style={{ animation: "flowAnim 2s .5s linear infinite" }} />
+
+          {/* ── ROW 3: DEBATE ── */}
+          <NodeBox id="debate" x={155} y={290} w={390} />
+
+          {/* pulse dots on debate */}
+          <circle className="blip-dot" cx={144} cy={317} r={4} fill={T.pend} />
+          <circle className="blip-dot" cx={556} cy={317} r={4} fill={T.pend} style={{ animationDelay: ".8s" }} />
+
+          {/* debate → learning */}
+          <line x1={350} y1={344} x2={350} y2={382} stroke={T.pend} strokeWidth={1} strokeDasharray="6 3"
+            fill="none" markerEnd="url(#arr)" style={{ animation: "flowAnim 1.5s linear infinite" }} />
+
+          {/* ── ROW 4: LEARNING ── */}
+          <NodeBox id="learning" x={155} y={382} w={390} />
+
+          {/* learning → pred + parlay */}
+          <line x1={280} y1={436} x2={190} y2={474} stroke={"#FF6B6B"} strokeWidth={1} strokeDasharray="6 3"
+            fill="none" markerEnd="url(#arr)" style={{ animation: "flowAnim 1.7s .1s linear infinite" }} />
+          <line x1={420} y1={436} x2={510} y2={474} stroke={"#FF6B6B"} strokeWidth={1} strokeDasharray="6 3"
+            fill="none" markerEnd="url(#arr)" style={{ animation: "flowAnim 1.7s .3s linear infinite" }} />
+
+          {/* ── ROW 5: PRED + PARLAY ── */}
+          <NodeBox id="pred"   x={60}  y={474} w={260} />
+          <NodeBox id="parlay" x={380} y={474} w={260} />
+
+          {/* pred → tg + web */}
+          <line x1={150} y1={528} x2={150} y2={558} stroke={T.accent} strokeWidth={1} strokeDasharray="6 3"
+            fill="none" markerEnd="url(#arr)" style={{ animation: "flowAnim 1.4s linear infinite" }} />
+          <line x1={220} y1={528} x2={430} y2={558} stroke={T.accent} strokeWidth={1} strokeDasharray="6 3"
+            fill="none" markerEnd="url(#arr)" style={{ animation: "flowAnim 1.4s .3s linear infinite" }} />
+
+          {/* parlay → tg + web */}
+          <line x1={510} y1={528} x2={510} y2={558} stroke={T.win} strokeWidth={1} strokeDasharray="6 3"
+            fill="none" markerEnd="url(#arr)" style={{ animation: "flowAnim 1.4s linear infinite" }} />
+          <line x1={440} y1={528} x2={260} y2={558} stroke={T.win} strokeWidth={1} strokeDasharray="6 3"
+            fill="none" markerEnd="url(#arr)" style={{ animation: "flowAnim 1.4s .3s linear infinite" }} />
+
+          {/* ── ROW 6: DELIVERY ── */}
+          <NodeBox id="tg"  x={30}  y={558} w={280} />
+          <NodeBox id="web" x={390} y={558} w={280} />
+
+          {/* feedback loop: web → learning (dashed left edge) */}
+          <path
+            d={`M 30 585 L 12 585 L 12 409 L 153 409`}
+            fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth={1} strokeDasharray="4 4"
+            markerEnd="url(#arr)"
+          />
+          <text x={8} y={500} fontSize={9} fill="rgba(255,255,255,0.25)"
+            fontFamily="'JetBrains Mono',monospace"
+            transform="rotate(-90, 8, 500)" textAnchor="middle">
+            feedback loop
+          </text>
+        </svg>
+      </div>
+
+      {/* League pills */}
+      <div style={{ padding: "10px 16px 16px", display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {["PL","PD","SA","BL1","FL1","UCL","UEL","ELC","PPL","DED","BSA","MLS"].map(c => (
+          <span key={c} style={{
+            fontFamily:"'JetBrains Mono',monospace", fontSize: 9, fontWeight: 700,
+            padding: "3px 9px", borderRadius: 6, letterSpacing: ".8px",
+            background: "rgba(79,142,255,.1)", border: "1px solid rgba(79,142,255,.2)", color: T.accent,
+          }}>{c}</span>
+        ))}
+        <span style={{
+          fontFamily:"'JetBrains Mono',monospace", fontSize: 9,
+          padding: "3px 9px", borderRadius: 6, letterSpacing: ".5px",
+          color: T.muted,
+        }}>via TheSportsDB FREE</span>
+      </div>
+    </div>
+  );
+};
+
 /* ─── EMPTY STATE ─────────────────────────────────────────────────────────── */
 const EmptyState = ({ icon, title, desc }) => (
   <div style={{ textAlign: "center", padding: "48px 24px" }}>
@@ -595,7 +828,7 @@ export default function Dashboard() {
 
     // ── FALLBACK: build popup dari prediksi pending + semua jadwal ──
     // Ambil jadwal dari semua liga yang disupport
-    const comps = ["PL","PD","SA","BL1","FL1"];
+    const comps = ["PL","PD","SA","BL1","FL1","UCL","UEL","ELC","PPL","DED","BSA","MLS"];
     const allMatches = [];
     await Promise.all(comps.map(async c => {
       try {
@@ -743,6 +976,7 @@ export default function Dashboard() {
     { key: "schedule",     icon: "📅", label: "Schedule"    },
     { key: "feed",         icon: "📡", label: "Live"        },
     { key: "parlay",       icon: "🏆", label: "Parlay"      },
+    { key: "howitworks",   icon: "🧠", label: "How It Works"},
   ];
 
   /* ── RENDER ── */
@@ -1044,7 +1278,7 @@ export default function Dashboard() {
                 <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, letterSpacing: "1px" }}>COMPETITION</span>
                 <div style={{ position: "relative" }}>
                   <select className="sel" value={comp} onChange={e => setComp(e.target.value)}>
-                    {["PL", "PD", "SA", "BL1", "FL1"].map(c => <option key={c}>{c}</option>)}
+                    {["PL","PD","SA","BL1","FL1","UCL","UEL","ELC","PPL","DED","BSA","MLS"].map(c => <option key={c}>{c}</option>)}
                   </select>
                 </div>
                 <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, marginLeft: "auto" }}>{schedule.length} matches</span>
@@ -1107,6 +1341,27 @@ export default function Dashboard() {
                 ? <EmptyState icon="📡" title="Menunggu aktivitas AI..." desc="Bot aktif akan mengirim events ke sini" />
                 : logs.map((l, i) => <LogCard key={i} log={l} />)
               }
+            </div>
+          </div>
+        )}
+
+        {/* ════════ HOW IT WORKS ════════ */}
+        {tab === "howitworks" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <AIFlowDiagram />
+            {/* Extra info cards */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }} className="stat-grid">
+              {[
+                { icon: "🌍", title: "12 Liga Didukung", desc: "PL · PD · SA · BL1 · FL1 · UCL · UEL · ELC · PPL · DED · BSA · MLS — semua FREE via TheSportsDB", color: T.accent },
+                { icon: "🤖", title: "Multi-Agent Debate", desc: "3 AI agents berdebat setiap prediksi — statistik, odds value, dan konteks situasional", color: T.purple },
+                { icon: "📈", title: "Self-Learning", desc: "Sistem belajar dari hasil aktual dan otomatis update bobot agent untuk akurasi yang terus meningkat", color: T.win },
+              ].map((c, i) => (
+                <div key={i} className="glass" style={{ padding: "16px 18px" }}>
+                  <div style={{ fontSize: 22, marginBottom: 10 }}>{c.icon}</div>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: c.color, marginBottom: 6 }}>{c.title}</div>
+                  <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, lineHeight: 1.8 }}>{c.desc}</div>
+                </div>
+              ))}
             </div>
           </div>
         )}
