@@ -18,7 +18,18 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.environ.get("DATABASE_PATH", "/tmp/predictions.db")
+_DEFAULT_DB_DIR  = "/data"                        # Railway persistent volume mount
+_DEFAULT_DB_PATH = os.path.join(_DEFAULT_DB_DIR, "predictions.db")
+
+# Fallback: kalau /data tidak tersedia (local dev), pakai /tmp
+if not os.path.isdir(_DEFAULT_DB_DIR):
+    try:
+        os.makedirs(_DEFAULT_DB_DIR, exist_ok=True)
+    except OSError:
+        _DEFAULT_DB_DIR  = "/tmp"
+        _DEFAULT_DB_PATH = "/tmp/predictions.db"
+
+DB_PATH = os.environ.get("DATABASE_PATH", _DEFAULT_DB_PATH)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
