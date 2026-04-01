@@ -906,8 +906,8 @@ async def submit_hasil(data: SubmitHasilRequest):
     3. Kalau >1 match → return 300 + daftar kandidat
     4. Kalau 0 match → return 404
     """
-    if data.outcome not in ("win", "loss"):
-        raise HTTPException(status_code=400, detail="outcome must be 'win' or 'loss'")
+    if data.outcome not in ("win", "loss", "skip"):
+        raise HTTPException(status_code=400, detail="outcome must be 'win', 'loss', or 'skip'")
 
     db = get_db()
 
@@ -959,6 +959,8 @@ async def submit_hasil(data: SubmitHasilRequest):
     confidence = pred["confidence"]
     now_str    = datetime.now().isoformat()
 
+    is_skip = data.outcome == "skip"
+
     with db._get_conn() as conn:
         # Cek tidak dobel
         existing = conn.execute(
@@ -974,25 +976,26 @@ async def submit_hasil(data: SubmitHasilRequest):
         """, (
             pred_id,
             match_name,
-            f"Manual: {data.outcome.upper()} (input by admin)",
+            f"Manual: {'SKIP — dihapus dari picks' if is_skip else data.outcome.upper()} (input by admin)",
             ai_pick,
-            data.outcome,
+            data.outcome,   # 'skip' disimpan apa adanya
             "",
-            f"Manual input via /hasil. Query: '{data.query}'",
+            f"{'SKIP' if is_skip else 'Manual input'} via /hasil. Query: '{data.query}'",
             now_str,
         ))
         conn.commit()
 
-    # Trigger learning engine
-    try:
-        get_learning_engine().analyze_result(pred_id)
-    except Exception as e:
-        logger.warning(f"Learning engine analyze failed: {e}")
+    # Skip tidak trigger learning engine (bukan hasil beneran)
+    if not is_skip:
+        try:
+            get_learning_engine().analyze_result(pred_id)
+        except Exception as e:
+            logger.warning(f"Learning engine analyze failed: {e}")
 
-    # Stats terkini
+    # Stats terkini (skip tidak masuk WR karena outcome bukan win/loss)
     stats = db.get_overall_stats()
 
-    # Broadcast ke WebSocket → web update realtime
+    # Broadcast ke WebSocket → web hilangkan dari pending, skip tidak masuk History WR
     await broadcast_log("result_update", {
         "prediction_id": pred_id,
         "match_name":    match_name,
@@ -1000,6 +1003,7 @@ async def submit_hasil(data: SubmitHasilRequest):
         "bet_type":      bet_type,
         "outcome":       data.outcome,
         "manual":        True,
+        "is_skip":       is_skip,
         "stats": {
             "win_rate": stats["win_rate"],
             "wins":     stats["wins"],
@@ -1072,8 +1076,9 @@ async def push_manual_result(data: ManualResultPush):
 @app.get("/api/history")
 async def get_history(limit: int = 50, offset: int = 0):
     """
-    Kembalikan semua prediksi yang SUDAH ada hasilnya (win/loss),
+    Kembalikan semua prediksi yang SUDAH ada hasilnya (win/loss/skip),
     diurutkan dari yang paling baru.
+    Skip ditampilkan tapi tidak dihitung di WR.
     Dipakai oleh tab History di frontend.
     """
     db = get_db()
