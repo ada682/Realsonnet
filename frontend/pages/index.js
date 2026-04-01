@@ -378,33 +378,44 @@ const UpcomingPopup = ({ pred, visible, total, idx, onClose }) => {
   const [timeLeft, setTimeLeft] = useState("");
 
   useEffect(() => {
-    if (!pred?.next_match) return;
+    if (!pred?.next_match?.time_left_sec) return;
+    // Hitung detik yang sudah berlalu sejak data di-fetch (pakai created_at popup)
+    const fetchedAt = Date.now();
     const tick = () => {
-      const sec = Math.max(0, pred.next_match.time_left_sec - Math.floor((Date.now() / 1000) - _popupMountedAt));
-      const h = Math.floor(sec / 3600);
-      const m = Math.floor((sec % 3600) / 60);
-      const s = sec % 60;
-      if (h > 0)      setTimeLeft(`${h}h ${m}m`);
-      else if (m > 0) setTimeLeft(`${m}m ${s}s`);
-      else            setTimeLeft(`${s}s`);
+      const elapsed    = Math.floor((Date.now() - fetchedAt) / 1000);
+      const sec        = Math.max(0, pred.next_match.time_left_sec - elapsed);
+      const h          = Math.floor(sec / 3600);
+      const m          = Math.floor((sec % 3600) / 60);
+      const s          = sec % 60;
+      if (h > 0)       setTimeLeft(`${h}h ${m}m`);
+      else if (m > 0)  setTimeLeft(`${m}m ${s}s`);
+      else             setTimeLeft(`${s}s`);
     };
     tick();
     const t = setInterval(tick, 1000);
     return () => clearInterval(t);
   }, [pred]);
 
-  if (!pred?.next_match) return null;
-  const m          = pred.next_match;
-  const isSoon     = m.time_left_sec < 3600;
-  const isVerySoon = m.time_left_sec < 900;
-  const accentCol  = isVerySoon ? T.loss : isSoon ? T.pend : T.accent;
+  if (!pred) return null;
+
+  const m          = pred.next_match;   // bisa null kalau unknown / cache kosong
+  const isSoon     = m && m.time_left_sec < 3600;
+  const isVerySoon = m && m.time_left_sec < 900;
+  const isUnknown  = pred.api_status === "unknown" || !m;
+  const accentCol  = isUnknown ? T.purple : isVerySoon ? T.loss : isSoon ? T.pend : T.accent;
   const betCol     = pred.bet_type === "1X2" ? T.accent : pred.bet_type === "OU" ? T.cyan : T.purple;
 
-  const kickoffWIB = new Date(m.kickoff_wib || m.kickoff_utc);
-  const kickoffStr = kickoffWIB.toLocaleString("id-ID", {
-    day: "2-digit", month: "short",
-    hour: "2-digit", minute: "2-digit",
-  });
+  // Parse team names dari match_name kalau next_match null
+  const parts       = pred.match_name?.split(" vs ") || ["?", "?"];
+  const homeDisplay = m?.home || parts[0]?.trim() || "?";
+  const awayDisplay = m?.away || parts[1]?.trim() || "?";
+
+  const kickoffStr = m?.kickoff_wib
+    ? new Date(m.kickoff_wib).toLocaleString("id-ID", {
+        day: "2-digit", month: "short",
+        hour: "2-digit", minute: "2-digit",
+      })
+    : null;
 
   return (
     <div
@@ -436,28 +447,29 @@ const UpcomingPopup = ({ pred, visible, total, idx, onClose }) => {
             background: `${accentCol}22`, border: `1px solid ${accentCol}40`,
             display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11,
           }}>
-            {isVerySoon ? "⚡" : "📅"}
+            {isUnknown ? "🔮" : isVerySoon ? "⚡" : "📅"}
           </div>
           <span style={{
             fontFamily: "'JetBrains Mono',monospace", fontSize: 9,
             fontWeight: 700, letterSpacing: "1.6px", color: accentCol,
-            textTransform: "uppercase",
           }}>
-            {isVerySoon ? "KICKS OFF SOON" : isSoon ? "UPCOMING · 1H" : "NEXT MATCH"}
+            {isUnknown ? "PREDIKSI AKTIF" : isVerySoon ? "KICKS OFF SOON" : isSoon ? "UPCOMING · <1H" : "NEXT MATCH"}
           </span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {/* Dot indicators */}
-          <div style={{ display: "flex", gap: 4 }}>
-            {Array.from({ length: Math.min(total, 5) }).map((_, i) => (
-              <div key={i} style={{
-                width: i === idx % Math.min(total, 5) ? 14 : 5, height: 5,
-                borderRadius: 3,
-                background: i === idx % Math.min(total, 5) ? accentCol : T.dim,
-                transition: "all .3s ease",
-              }} />
-            ))}
-          </div>
+          {total > 1 && (
+            <div style={{ display: "flex", gap: 4 }}>
+              {Array.from({ length: Math.min(total, 6) }).map((_, i) => (
+                <div key={i} style={{
+                  width: i === (idx % Math.min(total, 6)) ? 14 : 5, height: 5,
+                  borderRadius: 3,
+                  background: i === (idx % Math.min(total, 6)) ? accentCol : T.dim,
+                  transition: "all .3s ease",
+                }} />
+              ))}
+            </div>
+          )}
           <button
             onClick={onClose}
             style={{
@@ -471,28 +483,17 @@ const UpcomingPopup = ({ pred, visible, total, idx, onClose }) => {
 
       {/* Teams */}
       <div style={{ padding: "10px 14px 0" }}>
-        <div style={{
-          fontSize: 14, fontWeight: 700, color: T.text, lineHeight: 1.3,
-          letterSpacing: "-.3px",
-        }}>
-          {m.home}
-        </div>
-        <div style={{
-          fontFamily: "'JetBrains Mono',monospace", fontSize: 9,
-          color: T.muted, margin: "3px 0", letterSpacing: "1px",
-        }}>VS</div>
-        <div style={{ fontSize: 14, fontWeight: 700, color: T.text, lineHeight: 1.3, letterSpacing: "-.3px" }}>
-          {m.away}
-        </div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: T.text, lineHeight: 1.3 }}>{homeDisplay}</div>
+        <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 9, color: T.muted, margin: "3px 0", letterSpacing: "1px" }}>VS</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: T.text, lineHeight: 1.3 }}>{awayDisplay}</div>
       </div>
 
       {/* Prediction badge */}
-      <div style={{ padding: "8px 14px 0", display: "flex", alignItems: "center", gap: 6 }}>
+      <div style={{ padding: "8px 14px 0", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
         <span style={{
-          background: `${betCol}18`, border: `1px solid ${betCol}35`,
-          borderRadius: 7, padding: "2px 8px",
-          fontFamily: "'JetBrains Mono',monospace", fontSize: 9, fontWeight: 700,
-          color: betCol, letterSpacing: ".8px",
+          background: `${betCol}18`, border: `1px solid ${betCol}35`, borderRadius: 7,
+          padding: "2px 8px", fontFamily: "'JetBrains Mono',monospace", fontSize: 9,
+          fontWeight: 700, color: betCol, letterSpacing: ".8px",
         }}>{pred.bet_type}</span>
         <span style={{
           fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: T.sub,
@@ -501,42 +502,46 @@ const UpcomingPopup = ({ pred, visible, total, idx, onClose }) => {
         <span style={{
           fontFamily: "'JetBrains Mono',monospace", fontSize: 9,
           color: pred.confidence >= 70 ? T.win : pred.confidence >= 50 ? T.pend : T.loss,
+          fontWeight: 700,
         }}>{pred.confidence}%</span>
       </div>
 
-      {/* Kickoff + Countdown */}
-      <div style={{
-        margin: "10px 14px 14px",
-        background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.07)",
-        borderRadius: 12, padding: "10px 12px",
-        display: "flex", justifyContent: "space-between", alignItems: "center",
-      }}>
-        <div>
+      {/* Kickoff + Countdown (kalau ada) */}
+      <div style={{ margin: "10px 14px 14px" }}>
+        {kickoffStr ? (
           <div style={{
-            fontFamily: "'JetBrains Mono',monospace", fontSize: 8,
-            color: T.muted, letterSpacing: "1px", marginBottom: 3,
-          }}>KICKOFF WIB</div>
+            background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.07)",
+            borderRadius: 12, padding: "10px 12px",
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+          }}>
+            <div>
+              <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 8, color: T.muted, letterSpacing: "1px", marginBottom: 3 }}>KICKOFF WIB</div>
+              <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, fontWeight: 600, color: T.text }}>{kickoffStr}</div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 8, color: T.muted, letterSpacing: "1px", marginBottom: 3 }}>TIME LEFT</div>
+              <div className={isVerySoon ? "time-blink" : ""} style={{
+                fontFamily: "'JetBrains Mono',monospace", fontSize: 16,
+                fontWeight: 700, color: accentCol, letterSpacing: "-1px",
+              }}>{timeLeft || m.time_left_str}</div>
+            </div>
+          </div>
+        ) : (
           <div style={{
-            fontFamily: "'JetBrains Mono',monospace", fontSize: 11,
-            fontWeight: 600, color: T.text,
-          }}>{kickoffStr}</div>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div style={{
-            fontFamily: "'JetBrains Mono',monospace", fontSize: 8,
-            color: T.muted, letterSpacing: "1px", marginBottom: 3,
-          }}>TIME LEFT</div>
-          <div className={isVerySoon ? "time-blink" : ""} style={{
-            fontFamily: "'JetBrains Mono',monospace", fontSize: 16,
-            fontWeight: 700, color: accentCol, letterSpacing: "-1px",
-          }}>{timeLeft || m.time_left_str}</div>
-        </div>
+            background: `${T.purple}12`, border: `1px solid ${T.purple}25`,
+            borderRadius: 10, padding: "8px 12px",
+            fontFamily: "'JetBrains Mono',monospace", fontSize: 9,
+            color: T.muted, lineHeight: 1.6,
+          }}>
+            ⏳ Jadwal belum tersedia di API · menunggu data...
+          </div>
+        )}
       </div>
     </div>
   );
 };
 
-// timestamp saat popup mount, untuk live countdown
+// timestamp saat popup mount
 let _popupMountedAt = Date.now() / 1000;
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
@@ -552,10 +557,12 @@ export default function Dashboard() {
   const [loading,  setLoading]  = useState(true);
   const [wsOk,     setWsOk]     = useState(false);
   const [parlay,   setParlay]   = useState(null);
-  const [upcomingPreds, setUpcomingPreds] = useState([]);  // prediksi + next match info
-  const [popupIdx,      setPopupIdx]      = useState(0);   // index popup yang ditampilkan
+  const [upcomingPreds, setUpcomingPreds] = useState([]);
+  const [popupIdx,      setPopupIdx]      = useState(0);
   const [popupVisible,  setPopupVisible]  = useState(false);
-  const logsRef = useRef(null);
+  const [popupDismissed, setPopupDismissed] = useState(false);  // user manually close
+  const logsRef  = useRef(null);
+  const predsRef = useRef([]);  // always-fresh copy for async callbacks
 
   const load = useCallback(async () => {
     try {
@@ -563,32 +570,87 @@ export default function Dashboard() {
         fetch(`${API}/api/stats`).then(r => r.json()),
         fetch(`${API}/api/predictions?limit=50`).then(r => r.json()),
       ]);
-      setStats(s); setPreds(p);
+      setStats(s); setPreds(p); predsRef.current = p;
     } catch {}
     setLoading(false);
   }, []);
 
   const loadUpcoming = useCallback(async () => {
+    // Coba endpoint baru dulu, kalau gagal (endpoint belum ada di Railway) → fallback ke schedule
     try {
       const data = await fetch(`${API}/api/upcoming-predictions`).then(r => r.json());
-      // Filter: hanya yang ada next_match (ada di API) dan belum mulai
-      const valid = (Array.isArray(data) ? data : []).filter(
-        p => p.next_match && !p.next_match.already_started
-      );
-      setUpcomingPreds(valid);
-    } catch {}
+      if (Array.isArray(data) && data.length > 0) {
+        setUpcomingPreds(data.filter(p => !p.outcome));
+        return;
+      }
+    } catch (_) {
+      // endpoint belum di-deploy → pakai fallback
+    }
+
+    // ── FALLBACK: build popup dari prediksi pending + semua jadwal ──
+    // Ambil jadwal dari semua liga yang disupport
+    const comps = ["PL","CL","PD","SA","BL1","FL1"];
+    const allMatches = [];
+    await Promise.all(comps.map(async c => {
+      try {
+        const d = await fetch(`${API}/api/schedule?competition=${c}`).then(r => r.json());
+        if (d.matches) allMatches.push(...d.matches);
+      } catch (_) {}
+    }));
+
+    const pending = (predsRef.current || []).filter(p => !p.outcome);
+    const enriched = pending.map(pred => {
+      const parts = (pred.match_name || "").split(" vs ");
+      const home  = (parts[0] || "").trim().toLowerCase();
+      const away  = (parts[1] || "").trim().toLowerCase();
+      const found = allMatches.find(m => {
+        const mh = (m.home || "").toLowerCase();
+        const ma = (m.away || "").toLowerCase();
+        return (mh.includes(home.split(" ")[0]) || home.includes(mh.split(" ")[0])) &&
+               (ma.includes(away.split(" ")[0]) || away.includes(ma.split(" ")[0]));
+      });
+
+      if (!found) return { ...pred, api_status: "unknown", next_match: null };
+
+      const kickoffUTC = new Date(found.kickoff);
+      const kickoffWIB = new Date(kickoffUTC.getTime() + 7 * 3600000);
+      const secLeft    = Math.max(0, Math.floor((kickoffUTC - Date.now()) / 1000));
+      const h          = Math.floor(secLeft / 3600);
+      const min        = Math.floor((secLeft % 3600) / 60);
+
+      return {
+        ...pred,
+        api_status: "found",
+        next_match: {
+          home:           found.home,
+          away:           found.away,
+          competition:    found.competition,
+          kickoff_utc:    found.kickoff,
+          kickoff_wib:    kickoffWIB.toISOString(),
+          time_left_sec:  secLeft,
+          time_left_str:  h > 0 ? `${h}h ${min}m` : `${min}m`,
+          already_started: secLeft === 0,
+        },
+      };
+    }).filter(p => p.next_match && !p.next_match.already_started);
+
+    setUpcomingPreds(enriched);
   }, []);
 
   const loadSched = useCallback(async (c) => {
     try {
-      const d = await fetch(`${API}/api/schedule?competition=${c}`).then(r => r.json());
+      const r = await fetch(`${API}/api/schedule?competition=${c}`);
+      if (!r.ok) { console.warn("schedule fetch failed:", r.status); return; }
+      const d = await r.json();
       setSchedule(d.matches || []);
-    } catch {}
+    } catch (e) {
+      console.warn("loadSched error:", e);
+    }
   }, []);
 
   useEffect(() => {
-    load();
-    loadUpcoming();
+    // load preds dulu, baru loadUpcoming (supaya predsRef terisi)
+    load().then(() => loadUpcoming());
     let ws, timer;
     const connect = () => {
       ws = new WebSocket(WS);
@@ -599,29 +661,31 @@ export default function Dashboard() {
         const msg = JSON.parse(e.data);
         setLogs(prev => [msg, ...prev].slice(0, 150));
         if (["new_prediction","result_tracked","parlay_ready"].includes(msg.event)) {
-          load();
-          loadUpcoming();
+          load().then(() => loadUpcoming());
         }
         if (msg.event === "parlay_ready") setParlay(msg.data);
       };
     };
     connect();
-    const interval = setInterval(() => { load(); loadUpcoming(); }, 60000);
+    const interval = setInterval(() => { load().then(() => loadUpcoming()); }, 60000);
     return () => { clearTimeout(timer); clearInterval(interval); ws?.close(); };
   }, []);
 
-  // ── Popup rotation: ganti setiap 6 detik ──
+  // ── Popup rotation: ganti setiap 7 detik, skip kalau user close ──
   useEffect(() => {
     if (upcomingPreds.length === 0) { setPopupVisible(false); return; }
-    _popupMountedAt = Date.now() / 1000;
-    setPopupVisible(true);
+    // Ada data baru → reset dismissed, munculkan lagi
+    setPopupDismissed(false);
+    setPopupIdx(0);
+    setTimeout(() => setPopupVisible(true), 300);  // delay kecil supaya smooth
+
     const rot = setInterval(() => {
       setPopupVisible(false);
       setTimeout(() => {
-        setPopupIdx(i => (i + 1) % upcomingPreds.length);
-        _popupMountedAt = Date.now() / 1000;
-        setPopupVisible(true);
-      }, 400);
+        setPopupIdx(prev => (prev + 1) % upcomingPreds.length);
+        setPopupDismissed(false);
+        setTimeout(() => setPopupVisible(true), 50);
+      }, 380);
     }, 7000);
     return () => clearInterval(rot);
   }, [upcomingPreds]);
@@ -1070,13 +1134,13 @@ export default function Dashboard() {
       </div>
 
       {/* ── UPCOMING MATCH POPUP ── */}
-      {upcomingPreds.length > 0 && (
+      {upcomingPreds.length > 0 && !popupDismissed && (
         <UpcomingPopup
           pred={upcomingPreds[popupIdx % upcomingPreds.length]}
           visible={popupVisible}
           total={upcomingPreds.length}
           idx={popupIdx}
-          onClose={() => setPopupVisible(false)}
+          onClose={() => { setPopupVisible(false); setPopupDismissed(true); }}
         />
       )}
     </>
