@@ -96,8 +96,11 @@ async def fetch_football_data(path: str) -> dict:
 
 async def get_upcoming_matches(competition_code: str = "PL", days: int = 7) -> list:
     try:
-        data = await fetch_football_data(f"/competitions/{competition_code}/matches?status=SCHEDULED")
-        matches = data.get("matches", [])[:20]
+        today  = datetime.utcnow().date()
+        future = today + timedelta(days=days)
+        path   = f"/competitions/{competition_code}/matches?dateFrom={today}&dateTo={future}"
+        data   = await fetch_football_data(path)
+        matches = [m for m in data.get("matches", []) if m.get("status") in ("SCHEDULED", "TIMED")][:20]
         return [
             {
                 "id":          m["id"],
@@ -118,8 +121,12 @@ async def get_upcoming_matches(competition_code: str = "PL", days: int = 7) -> l
 
 async def get_finished_matches(competition_code: str = "PL") -> list:
     try:
-        data = await fetch_football_data(f"/competitions/{competition_code}/matches?status=FINISHED")
-        matches = data.get("matches", [])[:20]
+        today = datetime.utcnow().date()
+        past  = today - timedelta(days=7)
+        data  = await fetch_football_data(
+            f"/competitions/{competition_code}/matches?dateFrom={past}&dateTo={today}"
+        )
+        matches = [m for m in data.get("matches", []) if m.get("status") == "FINISHED"][:20]
         return [
             {
                 "id":          m["id"],
