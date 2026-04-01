@@ -12,6 +12,7 @@ import re
 import logging
 from dataclasses import dataclass, field
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from deepseek_wrapper import DeepSeekSession
 from database import get_db, PredictionRecord
 from learning_engine import get_learning_engine
@@ -25,7 +26,7 @@ BET_LABEL = {
     "AH":  "Asian Handicap",
 }
 
-MAX_ROUNDS    = 5
+MAX_ROUNDS    = 2     # tidak dipakai di run() lagi, tapi dipertahankan untuk referensi
 CONSENSUS_PCT = 0.60  # 3/5 agents must agree
 
 
@@ -49,23 +50,26 @@ class Agent:
     def init_session(self):
         self.session = DeepSeekSession(label=f"Agent:{self.name}")
 
-    def initial_analysis_prompt(self, match: str, learning_context: str = "") -> str:
+    def initial_analysis_prompt(self, matches: list, learning_context: str = "") -> str:
         context_section = f"\n{learning_context}\n" if learning_context else ""
+        matches_numbered = "\n".join(f"{i+1}. {m}" for i, m in enumerate(matches))
+        match_blocks = "\n".join(
+            f"MATCH_{i+1}_BET_TYPE: [1X2 or OU or AH]\n"
+            f"MATCH_{i+1}_PICK: [your pick]\n"
+            f"MATCH_{i+1}_REASONING: [2-4 sentences]\n"
+            f"MATCH_{i+1}_CONFIDENCE: [0-100]"
+            for i in range(len(matches))
+        )
         return (
             f"IMPORTANT: You MUST respond in ENGLISH only. No other language.\n\n"
             f"You are {self.name} {self.emoji} — an elite global sports betting AI analyst.\n"
             f"{context_section}"
-            f"predict next match\n\n"
-            f"{match}\n\n"
-            f"win the parlay or you (AI) die\n\n"
+            f"predict ALL these matches for the parlay — win the parlay or you (AI) die\n\n"
+            f"{matches_numbered}\n\n"
             f"You have REAL-TIME WEB SEARCH and DEEP REASONING enabled.\n"
-            f"Research thoroughly. Be data-driven. Be decisive.\n\n"
-            f"=== MANDATORY RESPONSE FORMAT (end your reply with EXACTLY these 4 lines) ===\n"
-            f"BET_TYPE: 1X2\n"
-            f"PICK: [your pick here]\n"
-            f"REASONING: [2-4 sentences]\n"
-            f"CONFIDENCE: [number 0-100]\n"
-            f"(Replace 1X2 with OU or AH if more appropriate)\n"
+            f"Research each match thoroughly. Be data-driven. Be decisive.\n\n"
+            f"=== MANDATORY RESPONSE FORMAT — output a block for EACH match ===\n"
+            f"{match_blocks}\n"
         )
 
     def debate_response_prompt(self, round_num: int, debate_summary: str) -> str:
@@ -118,8 +122,15 @@ class DebateMaster:
     """
 
     def __init__(self, match: str):
-        self.match   = match
-        self.session = DeepSeekSession(label="DebateMaster")
+        self.match    = match
+        self._session = None  # lazy — dibuat saat pertama dibutuhkan
+
+    @property
+    def session(self):
+        """Buat session DeepSeek hanya saat pertama kali dibutuhkan."""
+        if self._session is None:
+            self._session = DeepSeekSession(label="DebateMaster")
+        return self._session
 
     def _build_discussion_prompt(self, agent_responses: list[dict], intro: str = "") -> str:
         matches_line = self.match
@@ -321,196 +332,238 @@ def parse_response(raw: str, agent_name: str = "") -> dict:
     return result
 
 
+def parse_multi_match_response(raw: str, matches: list, agent_name: str = "") -> list[dict]:
+    """
+    Parse response analyst yang berisi prediksi untuk SEMUA match sekaligus.
+    Format: MATCH_1_BET_TYPE, MATCH_1_PICK, dst.
+    Returns list of dict, satu per match (urutan sama dengan matches).
+    """
+    results = []
+    for i, match in enumerate(matches):
+        prefix = f"MATCH_{i+1}_"
+        result = {
+            "match":      match,
+            "bet_type":   None,
+            "pick":       None,
+            "reasoning":  "",
+            "confidence": 50,
+            "changed":    False,
+        }
+
+        bt_m = re.findall(rf"{prefix}BET[_\s]?TYPE\s*[:：]\s*([^\n]+)", raw, re.IGNORECASE)
+        if bt_m:
+            v = bt_m[-1].strip().upper()
+            if "OU" in v or "OVER" in v or "UNDER" in v:
+                result["bet_type"] = "OU"
+            elif "AH" in v or "HANDICAP" in v or "ASIAN" in v:
+                result["bet_type"] = "AH"
+            else:
+                result["bet_type"] = "1X2"
+
+        pk_m = re.findall(rf"{prefix}PICK\s*[:：]\s*([^\n]+)", raw, re.IGNORECASE)
+        if pk_m:
+            result["pick"] = pk_m[-1].strip()
+
+        rs_m = re.findall(
+            rf"{prefix}REASONING\s*[:：]\s*([^\n]+(?:\n(?!MATCH_\d)[^\n]+)*)",
+            raw, re.IGNORECASE
+        )
+        if rs_m:
+            result["reasoning"] = rs_m[-1].strip()
+
+        cf_m = re.findall(rf"{prefix}CONFIDENCE\s*[:：]\s*(\d+)", raw, re.IGNORECASE)
+        if cf_m:
+            try:
+                result["confidence"] = min(100, max(0, int(cf_m[-1])))
+            except Exception:
+                pass
+
+        result["bet_type"] = result["bet_type"] or "1X2"
+        result["pick"]     = result["pick"] or "Unknown"
+
+        if agent_name:
+            logger.info(
+                f"[{agent_name}] [{i+1}/{len(matches)}] {match} → "
+                f"[{result['bet_type']}] {result['pick']} ({result['confidence']}%)"
+            )
+
+        results.append(result)
+    return results
+
+
 def create_agents() -> list[Agent]:
     """
     All 5 analysts use the same unified prompt.
     No personality differences — same analysis framework for every agent.
+    Session dibuat lazy (saat dibutuhkan), bukan serentak — hemat token DeepSeek.
     """
-    agents = [
+    return [
         Agent(name="Analyst1", emoji="📊"),
         Agent(name="Analyst2", emoji="📈"),
         Agent(name="Analyst3", emoji="🔍"),
         Agent(name="Analyst4", emoji="💡"),
         Agent(name="Analyst5", emoji="⚡"),
     ]
-    for agent in agents:
-        agent.init_session()
-    return agents
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# MATCH ROOM
+# MULTI-MATCH ROOM  — semua match dianalisa sekaligus per analyst
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class MatchRoom:
-    def __init__(self, match: str):
-        self.match   = match
-        self.agents  = create_agents()
-        self.master  = DebateMaster(match)
+class MultiMatchRoom:
+    """
+    Satu room untuk SEMUA match.
+    Setiap analyst mendapat semua match dalam satu prompt → lebih efisien.
+    DebateMaster lalu membuat final verdict per-match.
+    """
+
+    def __init__(self, matches: list[str]):
+        self.matches  = matches
+        self.agents   = create_agents()
+        self._master  = None
         self.debate_log: list[dict] = []
-        self.prediction_id: int = None
 
-    def _agent_response_dict(self, agent: Agent) -> dict:
-        return {
-            "name":       agent.name,
-            "emoji":      agent.emoji,
-            "bet_type":   agent.bet_type,
-            "pick":       agent.pick,
-            "reasoning":  agent.reasoning,
-            "confidence": agent.confidence,
-        }
+    @property
+    def master(self) -> "DebateMaster":
+        if self._master is None:
+            # Gunakan semua match digabung sebagai label
+            self._master = DebateMaster("\n".join(self.matches))
+        return self._master
 
-    def _apply_parse(self, agent: Agent, raw: str, round_num: int) -> dict:
-        logger.info(f"  [{agent.name}] R{round_num} raw ({len(raw)} chars): {raw[:300]!r}")
-        p       = parse_response(raw, agent.name)
-        changed = p["changed"] and p["pick"] != "Unknown"
-
-        has_real_pick = agent.pick not in ("Unknown", "", None)
-        if p["pick"] != "Unknown":
-            agent.bet_type   = p["bet_type"]
-            agent.pick       = p["pick"]
-            if p["reasoning"]:
-                agent.reasoning = p["reasoning"]
-            agent.confidence = p["confidence"]
-            if changed:
-                agent.opinion_changed = True
-        elif not has_real_pick:
-            agent.bet_type   = p["bet_type"]
-            agent.pick       = p["pick"]
-            agent.reasoning  = p["reasoning"] or agent.reasoning
-            agent.confidence = p["confidence"]
-        else:
-            if p["reasoning"]:
-                agent.reasoning = p["reasoning"]
-            agent.confidence = p["confidence"]
-
-        entry = {
-            "round":      round_num,
-            "agent":      agent.name,
-            "emoji":      agent.emoji,
-            "bet_type":   agent.bet_type,
-            "pick":       agent.pick,
-            "reasoning":  agent.reasoning,
-            "confidence": agent.confidence,
-            "changed":    changed,
-        }
-        agent.round_log.append(entry)
-        self.debate_log.append(entry)
-        return entry
+    def _ask_agent_all_matches(self, agent: Agent, learning_text: str) -> list[dict]:
+        """Kirim semua match ke satu agent, parse hasilnya per-match."""
+        if agent.session is None:
+            agent.init_session()
+        prompt = agent.initial_analysis_prompt(self.matches, learning_text)
+        raw    = agent.session.ask(prompt)
+        logger.info(f"  [{agent.name}] raw ({len(raw)} chars): {raw[:200]!r}")
+        return parse_multi_match_response(raw, self.matches, agent.name)
 
     def run(self) -> dict:
-        logger.info(f"🎙️ MatchRoom starting: {self.match}")
-        learning      = get_learning_engine().get_learning_context(self.match)
+        """
+        Returns dict: { match_name: result_dict, ... }
+        """
+        logger.info(f"🎙️ MultiMatchRoom: {len(self.matches)} matches")
+        learning      = get_learning_engine().get_learning_context(" | ".join(self.matches))
         learning_text = learning.to_prompt_text()
 
-        consensus      = None
-        round_num      = 0
-        debate_summary = ""
+        # ══════════════════════════════════════════════════════════════════════
+        # FASE 1 — Tiap analyst analisa SEMUA match dalam satu prompt
+        # ══════════════════════════════════════════════════════════════════════
+        logger.info(f"  FASE 1: {len(self.agents)} analysts, masing-masing analisa {len(self.matches)} match...")
 
-        # Round 1: Initial independent analysis
-        round_num = 1
-        logger.info(f"  Round {round_num}: Initial analysis")
-        r1_responses = []
+        # agent_picks[analyst_idx][match_idx] = { bet_type, pick, confidence, reasoning }
+        agent_picks: list[list[dict]] = []
+
         for agent in self.agents:
-            raw = agent.session.ask(agent.initial_analysis_prompt(self.match, learning_text))
-            self._apply_parse(agent, raw, round_num)
-            r1_responses.append(self._agent_response_dict(agent))
-            logger.info(f"    {agent.emoji} {agent.name}: [{agent.bet_type}] {agent.pick} ({agent.confidence}%)")
+            picks = self._ask_agent_all_matches(agent, learning_text)
+            agent_picks.append(picks)
+            for p in picks:
+                logger.info(f"    {agent.emoji} {agent.name} | {p['match']}: [{p['bet_type']}] {p['pick']} ({p['confidence']}%)")
 
-        debate_summary = self.master.synthesize_round(round_num, r1_responses)
-        consensus      = self.master.check_consensus(r1_responses)
+        # ══════════════════════════════════════════════════════════════════════
+        # FASE 2 — DebateMaster buat final verdict untuk TIAP match
+        # ══════════════════════════════════════════════════════════════════════
+        logger.info(f"  FASE 2: DebateMaster memutuskan final per match...")
+        all_results: dict[str, dict] = {}
 
-        # Debate rounds until consensus or MAX_ROUNDS
-        while not consensus and round_num < MAX_ROUNDS:
-            round_num += 1
-            logger.info(f"  Round {round_num}: Debate")
+        for match_idx, match in enumerate(self.matches):
+            # Kumpulkan pendapat semua analyst untuk match ini
+            analyst_opinions = []
+            for agent_idx, agent in enumerate(self.agents):
+                p = agent_picks[agent_idx][match_idx]
+                analyst_opinions.append({
+                    "name":       agent.name,
+                    "emoji":      agent.emoji,
+                    "bet_type":   p["bet_type"],
+                    "pick":       p["pick"],
+                    "confidence": p["confidence"],
+                    "reasoning":  p["reasoning"],
+                })
 
-            round_responses = []
-            for agent in self.agents:
-                raw = agent.session.ask(agent.debate_response_prompt(round_num, debate_summary))
-                self._apply_parse(agent, raw, round_num)
-                round_responses.append(self._agent_response_dict(agent))
-                logger.info(
-                    f"    {agent.emoji} {agent.name}: [{agent.bet_type}] {agent.pick} "
-                    f"({'CHANGED' if agent.round_log[-1]['changed'] else 'held'})"
-                )
+            # DebateMaster declare final untuk match ini
+            dm = DebateMaster(match)
+            final = dm.declare_final(analyst_opinions, [])
 
-            debate_summary = self.master.synthesize_round(round_num, round_responses)
-            consensus      = self.master.check_consensus(round_responses)
+            # Best agent = confidence tertinggi untuk match ini
+            best_opinion = max(analyst_opinions, key=lambda x: x["confidence"])
+            best_agent_name = best_opinion["name"]
+            best_agent_emoji = best_opinion["emoji"]
 
-        # Final round: force verdict
-        final_responses = []
-        for agent in self.agents:
-            raw = agent.session.ask(agent.final_verdict_prompt(debate_summary))
-            self._apply_parse(agent, raw, round_num + 1)
-            final_responses.append(self._agent_response_dict(agent))
+            include = final.get("include", True)
+            logger.info(f"  ✅ {match}: [{final['bet_type']}] {final['pick']} | include={include}")
 
-        final = self.master.declare_final(final_responses, self.debate_log)
-        best  = max(self.agents, key=lambda a: a.confidence)
+            result = {
+                "match":   match,
+                "rounds":  1,
+                "include": include,
+                "agents": [
+                    {
+                        "name":            agent_opinions["name"],
+                        "emoji":           agent_opinions["emoji"],
+                        "bet_type":        agent_opinions["bet_type"],
+                        "pick":            agent_opinions["pick"],
+                        "confidence":      agent_opinions["confidence"],
+                        "opinion_changed": False,
+                        "rounds":          [],
+                    }
+                    for agent_opinions in analyst_opinions
+                ],
+                "consensus": {
+                    "bet_type":   final["bet_type"],
+                    "pick":       final["pick"],
+                    "confidence": final["confidence"],
+                    "votes":      f"{final['votes']}/{final['total']}",
+                    "summary":    final.get("summary", ""),
+                    "include":    include,
+                },
+                "best_bet": {
+                    "agent":      best_agent_name,
+                    "emoji":      best_agent_emoji,
+                    "bet_type":   best_opinion["bet_type"],
+                    "pick":       best_opinion["pick"],
+                    "confidence": best_opinion["confidence"],
+                    "reasoning":  best_opinion["reasoning"],
+                },
+            }
 
-        logger.info(f"  ✅ Consensus after {round_num} rounds: [{final['bet_type']}] {final['pick']}")
+            self._save_prediction(result)
+            all_results[match] = result
 
-        include = final.get("include", True)
-
-        result = {
-            "match":   self.match,
-            "rounds":  round_num,
-            "include": include,
-            "agents": [
-                {
-                    "name":            a.name,
-                    "emoji":           a.emoji,
-                    "bet_type":        a.bet_type,
-                    "pick":            a.pick,
-                    "confidence":      a.confidence,
-                    "opinion_changed": a.opinion_changed,
-                    "rounds":          a.round_log,
-                }
-                for a in self.agents
-            ],
-            "consensus": {
-                "bet_type":   final["bet_type"],
-                "pick":       final["pick"],
-                "confidence": final["confidence"],
-                "votes":      f"{final['votes']}/{final['total']}",
-                "summary":    final.get("summary", ""),
-                "include":    include,
-            },
-            "best_bet": {
-                "agent":      best.name,
-                "emoji":      best.emoji,
-                "bet_type":   best.bet_type,
-                "pick":       best.pick,
-                "confidence": best.confidence,
-                "reasoning":  best.reasoning,
-            },
-        }
-
-        self._save_prediction(result)
-        return result
+        return all_results
 
     def _save_prediction(self, result: dict):
         try:
-            consensus = result['consensus']
-            best      = result['best_bet']
+            consensus = result["consensus"]
+            best      = result["best_bet"]
 
             record = PredictionRecord(
-                match_name=result['match'],
-                bet_type=consensus['bet_type'],
-                predicted_pick=consensus['pick'],
-                confidence=consensus['confidence'],
-                debate_summary=consensus.get('summary', ''),
-                agents_data={'agents': result['agents']},
-                consensus_votes=consensus['votes'],
-                include_in_parlay=result['include']
+                match_name=result["match"],
+                bet_type=consensus["bet_type"],
+                predicted_pick=consensus["pick"],
+                confidence=consensus["confidence"],
+                debate_summary=consensus.get("summary", ""),
+                agents_data={"agents": result["agents"]},
+                consensus_votes=consensus["votes"],
+                include_in_parlay=result["include"],
             )
-
-            self.prediction_id = get_db().save_prediction(record)
-            result['prediction_id'] = self.prediction_id
-            logger.info(f"💾 Saved prediction #{self.prediction_id} to database")
-
+            pred_id = get_db().save_prediction(record)
+            result["prediction_id"] = pred_id
+            logger.info(f"💾 Saved prediction #{pred_id}: {result['match']} -> {consensus['pick']}")
         except Exception as e:
             logger.error(f"Failed to save prediction: {e}")
+
+
+# ─── compat: MatchRoom → MultiMatchRoom (single-match) ───────────────────────
+
+class MatchRoom:
+    """Backward-compat wrapper: single match → MultiMatchRoom."""
+    def __init__(self, match: str):
+        self._room = MultiMatchRoom([match])
+
+    def run(self) -> dict:
+        results = self._room.run()
+        return list(results.values())[0]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -645,8 +698,17 @@ class ParlayRoom:
 
 class AgentDebateEngine:
     def run_match_debate(self, match: str) -> dict:
-        logger.info(f"🤖 Debating: {match}")
+        """Single-match (backward compat)."""
+        logger.info(f"🤖 Debating single: {match}")
         return MatchRoom(match).run()
+
+    def run_all_matches(self, matches: list[str]) -> dict:
+        """
+        Analisa SEMUA match sekaligus — satu prompt per analyst berisi semua match.
+        Returns dict { match_name: result_dict }.
+        """
+        logger.info(f"🤖 MultiMatchRoom: {len(matches)} matches")
+        return MultiMatchRoom(matches).run()
 
     def run_parlay_room(self, results: dict) -> dict:
         logger.info(f"🎰 Parlay Room: {len(results)} matches")
