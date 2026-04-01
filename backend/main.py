@@ -867,6 +867,160 @@ async def push_parlay(data: ParlayPush):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# BOT FALLBACK ENDPOINTS  ← Dipakai bot.py (/list dan /hasil)
+# Bot jalan di container terpisah → tidak bisa akses volume SQLite langsung
+# Semua DB ops dilakukan di sini (FastAPI punya akses volume /Data)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/pending-list")
+async def get_pending_list():
+    """
+    Endpoint untuk /list di bot Telegram.
+    Kembalikan semua prediksi yang belum ada hasil (outcome IS NULL).
+    """
+    db = get_db()
+    with db._get_conn() as conn:
+        rows = conn.execute("""
+            SELECT p.id, p.match_name, p.predicted_pick, p.bet_type,
+                   p.confidence, p.include_in_parlay, p.created_at
+            FROM predictions p
+            LEFT JOIN match_results r ON p.id = r.prediction_id
+            WHERE r.id IS NULL
+            ORDER BY p.created_at DESC
+            LIMIT 50
+        """).fetchall()
+    return {"items": [dict(r) for r in rows], "total": len(rows)}
+
+
+class SubmitHasilRequest(BaseModel):
+    query:   str   # nama tim / match (fuzzy)
+    outcome: str   # 'win' atau 'loss'
+
+
+@app.post("/api/submit-hasil")
+async def submit_hasil(data: SubmitHasilRequest):
+    """
+    Endpoint untuk /hasil di bot Telegram.
+    1. Fuzzy search prediksi pending yang cocok dengan `query`
+    2. Kalau 1 match → insert ke match_results + broadcast WS + return stats
+    3. Kalau >1 match → return 300 + daftar kandidat
+    4. Kalau 0 match → return 404
+    """
+    if data.outcome not in ("win", "loss"):
+        raise HTTPException(status_code=400, detail="outcome must be 'win' or 'loss'")
+
+    db = get_db()
+
+    # Ambil semua pending
+    with db._get_conn() as conn:
+        rows = conn.execute("""
+            SELECT p.id, p.match_name, p.predicted_pick, p.bet_type, p.confidence
+            FROM predictions p
+            LEFT JOIN match_results r ON p.id = r.prediction_id
+            WHERE r.id IS NULL
+            ORDER BY p.created_at DESC
+            LIMIT 100
+        """).fetchall()
+        all_pending = [dict(r) for r in rows]
+
+    if not all_pending:
+        raise HTTPException(status_code=404, detail="Tidak ada picks pending")
+
+    # Fuzzy match
+    q = data.query.lower().strip()
+    matched = []
+    for row in all_pending:
+        mn = row["match_name"].lower()
+        if q in mn:
+            matched.append(row)
+        else:
+            words = q.split()
+            if any(w in mn for w in words if len(w) >= 3):
+                matched.append(row)
+
+    if not matched:
+        raise HTTPException(status_code=404, detail=f"Tidak ada match untuk: '{data.query}'")
+
+    if len(matched) > 1:
+        # Deduplicate dan kembalikan kandidat
+        candidates = list({r["match_name"] for r in matched})
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=300,
+            content={"candidates": candidates[:8], "query": data.query}
+        )
+
+    # Tepat 1 — simpan ke DB
+    pred       = matched[0]
+    pred_id    = pred["id"]
+    match_name = pred["match_name"]
+    ai_pick    = pred["predicted_pick"]
+    bet_type   = pred["bet_type"]
+    confidence = pred["confidence"]
+    now_str    = datetime.now().isoformat()
+
+    with db._get_conn() as conn:
+        # Cek tidak dobel
+        existing = conn.execute(
+            "SELECT id FROM match_results WHERE prediction_id = ?", (pred_id,)
+        ).fetchone()
+        if existing:
+            raise HTTPException(status_code=409, detail=f"Hasil untuk '{match_name}' sudah tercatat sebelumnya")
+
+        conn.execute("""
+            INSERT INTO match_results
+            (prediction_id, match_name, actual_result, predicted_pick, outcome, score, notes, recorded_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            pred_id,
+            match_name,
+            f"Manual: {data.outcome.upper()} (input by admin)",
+            ai_pick,
+            data.outcome,
+            "",
+            f"Manual input via /hasil. Query: '{data.query}'",
+            now_str,
+        ))
+        conn.commit()
+
+    # Trigger learning engine
+    try:
+        get_learning_engine().analyze_result(pred_id)
+    except Exception as e:
+        logger.warning(f"Learning engine analyze failed: {e}")
+
+    # Stats terkini
+    stats = db.get_overall_stats()
+
+    # Broadcast ke WebSocket → web update realtime
+    await broadcast_log("result_update", {
+        "prediction_id": pred_id,
+        "match_name":    match_name,
+        "pick":          ai_pick,
+        "bet_type":      bet_type,
+        "outcome":       data.outcome,
+        "manual":        True,
+        "stats": {
+            "win_rate": stats["win_rate"],
+            "wins":     stats["wins"],
+            "losses":   stats["losses"],
+            "total":    stats["total_predictions"],
+        }
+    })
+
+    logger.info(f"✅ submit-hasil: {match_name} → {data.outcome}")
+    return {
+        "ok":         True,
+        "match_name": match_name,
+        "pick":       ai_pick,
+        "bet_type":   bet_type,
+        "confidence": confidence,
+        "outcome":    data.outcome,
+        "stats":      stats,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # MANUAL RESULT ENDPOINT  ← BARU: fallback kalau API bola limit
 # ═══════════════════════════════════════════════════════════════════════════════
 
