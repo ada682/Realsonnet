@@ -156,6 +156,14 @@ body{background:${T.bg};color:${T.text};font-family:'DM Sans',sans-serif;-webkit
 @keyframes ping{75%,100%{transform:scale(2);opacity:0}}
 .ping{animation:ping 1.5s cubic-bezier(0,0,.2,1) infinite}
 
+/* ── Upcoming Match Popup ── */
+@keyframes popSlide{from{opacity:0;transform:translateY(20px) scale(.95)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes popFade{from{opacity:1;transform:translateY(0) scale(1)}to{opacity:0;transform:translateY(-8px) scale(.97)}}
+.popup-in{animation:popSlide .38s cubic-bezier(.16,1,.3,1) forwards}
+.popup-out{animation:popFade .32s ease forwards;pointer-events:none}
+@keyframes timeGlow{0%,100%{opacity:1}50%{opacity:.55}}
+.time-blink{animation:timeGlow 1.4s ease-in-out infinite}
+
 /* ── Scrollable ── */
 .scroll-x{overflow-x:auto;-webkit-overflow-scrolling:touch}
 .scroll-x::-webkit-scrollbar{height:2px}
@@ -365,6 +373,172 @@ const InfoBanner = ({ preds }) => {
   );
 };
 
+/* ─── UPCOMING MATCH POPUP ───────────────────────────────────────────────── */
+const UpcomingPopup = ({ pred, visible, total, idx, onClose }) => {
+  const [timeLeft, setTimeLeft] = useState("");
+
+  useEffect(() => {
+    if (!pred?.next_match) return;
+    const tick = () => {
+      const sec = Math.max(0, pred.next_match.time_left_sec - Math.floor((Date.now() / 1000) - _popupMountedAt));
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = sec % 60;
+      if (h > 0)      setTimeLeft(`${h}h ${m}m`);
+      else if (m > 0) setTimeLeft(`${m}m ${s}s`);
+      else            setTimeLeft(`${s}s`);
+    };
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => clearInterval(t);
+  }, [pred]);
+
+  if (!pred?.next_match) return null;
+  const m          = pred.next_match;
+  const isSoon     = m.time_left_sec < 3600;
+  const isVerySoon = m.time_left_sec < 900;
+  const accentCol  = isVerySoon ? T.loss : isSoon ? T.pend : T.accent;
+  const betCol     = pred.bet_type === "1X2" ? T.accent : pred.bet_type === "OU" ? T.cyan : T.purple;
+
+  const kickoffWIB = new Date(m.kickoff_wib || m.kickoff_utc);
+  const kickoffStr = kickoffWIB.toLocaleString("id-ID", {
+    day: "2-digit", month: "short",
+    hour: "2-digit", minute: "2-digit",
+  });
+
+  return (
+    <div
+      className={visible ? "popup-in" : "popup-out"}
+      style={{
+        position: "fixed", bottom: 24, right: 20, zIndex: 999,
+        width: 300,
+        background: "linear-gradient(145deg,rgba(13,16,28,.97) 0%,rgba(9,11,20,.97) 100%)",
+        border: `1px solid ${accentCol}44`,
+        borderRadius: 18,
+        boxShadow: `0 28px 72px rgba(0,0,0,.85), 0 0 0 1px ${accentCol}18, inset 0 1px 0 rgba(255,255,255,.06)`,
+        backdropFilter: "blur(24px)",
+        WebkitBackdropFilter: "blur(24px)",
+        overflow: "hidden",
+      }}
+    >
+      {/* Glow strip top */}
+      <div style={{
+        position: "absolute", top: 0, left: 0, right: 0, height: 2,
+        background: `linear-gradient(90deg, transparent 0%, ${accentCol} 40%, ${accentCol} 60%, transparent 100%)`,
+        opacity: .85,
+      }} />
+
+      {/* Header row */}
+      <div style={{ padding: "12px 14px 0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+          <div style={{
+            width: 22, height: 22, borderRadius: 7,
+            background: `${accentCol}22`, border: `1px solid ${accentCol}40`,
+            display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11,
+          }}>
+            {isVerySoon ? "⚡" : "📅"}
+          </div>
+          <span style={{
+            fontFamily: "'JetBrains Mono',monospace", fontSize: 9,
+            fontWeight: 700, letterSpacing: "1.6px", color: accentCol,
+            textTransform: "uppercase",
+          }}>
+            {isVerySoon ? "KICKS OFF SOON" : isSoon ? "UPCOMING · 1H" : "NEXT MATCH"}
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {/* Dot indicators */}
+          <div style={{ display: "flex", gap: 4 }}>
+            {Array.from({ length: Math.min(total, 5) }).map((_, i) => (
+              <div key={i} style={{
+                width: i === idx % Math.min(total, 5) ? 14 : 5, height: 5,
+                borderRadius: 3,
+                background: i === idx % Math.min(total, 5) ? accentCol : T.dim,
+                transition: "all .3s ease",
+              }} />
+            ))}
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.1)",
+              color: T.muted, cursor: "pointer", fontSize: 11, lineHeight: 1,
+              borderRadius: 6, padding: "3px 6px", transition: "all .15s",
+            }}
+          >✕</button>
+        </div>
+      </div>
+
+      {/* Teams */}
+      <div style={{ padding: "10px 14px 0" }}>
+        <div style={{
+          fontSize: 14, fontWeight: 700, color: T.text, lineHeight: 1.3,
+          letterSpacing: "-.3px",
+        }}>
+          {m.home}
+        </div>
+        <div style={{
+          fontFamily: "'JetBrains Mono',monospace", fontSize: 9,
+          color: T.muted, margin: "3px 0", letterSpacing: "1px",
+        }}>VS</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: T.text, lineHeight: 1.3, letterSpacing: "-.3px" }}>
+          {m.away}
+        </div>
+      </div>
+
+      {/* Prediction badge */}
+      <div style={{ padding: "8px 14px 0", display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{
+          background: `${betCol}18`, border: `1px solid ${betCol}35`,
+          borderRadius: 7, padding: "2px 8px",
+          fontFamily: "'JetBrains Mono',monospace", fontSize: 9, fontWeight: 700,
+          color: betCol, letterSpacing: ".8px",
+        }}>{pred.bet_type}</span>
+        <span style={{
+          fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: T.sub,
+          flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>{pred.predicted_pick}</span>
+        <span style={{
+          fontFamily: "'JetBrains Mono',monospace", fontSize: 9,
+          color: pred.confidence >= 70 ? T.win : pred.confidence >= 50 ? T.pend : T.loss,
+        }}>{pred.confidence}%</span>
+      </div>
+
+      {/* Kickoff + Countdown */}
+      <div style={{
+        margin: "10px 14px 14px",
+        background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.07)",
+        borderRadius: 12, padding: "10px 12px",
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+      }}>
+        <div>
+          <div style={{
+            fontFamily: "'JetBrains Mono',monospace", fontSize: 8,
+            color: T.muted, letterSpacing: "1px", marginBottom: 3,
+          }}>KICKOFF WIB</div>
+          <div style={{
+            fontFamily: "'JetBrains Mono',monospace", fontSize: 11,
+            fontWeight: 600, color: T.text,
+          }}>{kickoffStr}</div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{
+            fontFamily: "'JetBrains Mono',monospace", fontSize: 8,
+            color: T.muted, letterSpacing: "1px", marginBottom: 3,
+          }}>TIME LEFT</div>
+          <div className={isVerySoon ? "time-blink" : ""} style={{
+            fontFamily: "'JetBrains Mono',monospace", fontSize: 16,
+            fontWeight: 700, color: accentCol, letterSpacing: "-1px",
+          }}>{timeLeft || m.time_left_str}</div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// timestamp saat popup mount, untuk live countdown
+let _popupMountedAt = Date.now() / 1000;
+
 /* ═══════════════════════════════════════════════════════════════════════════ */
 /* MAIN DASHBOARD                                                              */
 /* ═══════════════════════════════════════════════════════════════════════════ */
@@ -378,6 +552,9 @@ export default function Dashboard() {
   const [loading,  setLoading]  = useState(true);
   const [wsOk,     setWsOk]     = useState(false);
   const [parlay,   setParlay]   = useState(null);
+  const [upcomingPreds, setUpcomingPreds] = useState([]);  // prediksi + next match info
+  const [popupIdx,      setPopupIdx]      = useState(0);   // index popup yang ditampilkan
+  const [popupVisible,  setPopupVisible]  = useState(false);
   const logsRef = useRef(null);
 
   const load = useCallback(async () => {
@@ -391,6 +568,17 @@ export default function Dashboard() {
     setLoading(false);
   }, []);
 
+  const loadUpcoming = useCallback(async () => {
+    try {
+      const data = await fetch(`${API}/api/upcoming-predictions`).then(r => r.json());
+      // Filter: hanya yang ada next_match (ada di API) dan belum mulai
+      const valid = (Array.isArray(data) ? data : []).filter(
+        p => p.next_match && !p.next_match.already_started
+      );
+      setUpcomingPreds(valid);
+    } catch {}
+  }, []);
+
   const loadSched = useCallback(async (c) => {
     try {
       const d = await fetch(`${API}/api/schedule?competition=${c}`).then(r => r.json());
@@ -400,6 +588,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     load();
+    loadUpcoming();
     let ws, timer;
     const connect = () => {
       ws = new WebSocket(WS);
@@ -409,14 +598,33 @@ export default function Dashboard() {
       ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
         setLogs(prev => [msg, ...prev].slice(0, 150));
-        if (["new_prediction","result_tracked","parlay_ready"].includes(msg.event)) load();
+        if (["new_prediction","result_tracked","parlay_ready"].includes(msg.event)) {
+          load();
+          loadUpcoming();
+        }
         if (msg.event === "parlay_ready") setParlay(msg.data);
       };
     };
     connect();
-    const interval = setInterval(load, 60000);
+    const interval = setInterval(() => { load(); loadUpcoming(); }, 60000);
     return () => { clearTimeout(timer); clearInterval(interval); ws?.close(); };
   }, []);
+
+  // ── Popup rotation: ganti setiap 6 detik ──
+  useEffect(() => {
+    if (upcomingPreds.length === 0) { setPopupVisible(false); return; }
+    _popupMountedAt = Date.now() / 1000;
+    setPopupVisible(true);
+    const rot = setInterval(() => {
+      setPopupVisible(false);
+      setTimeout(() => {
+        setPopupIdx(i => (i + 1) % upcomingPreds.length);
+        _popupMountedAt = Date.now() / 1000;
+        setPopupVisible(true);
+      }, 400);
+    }, 7000);
+    return () => clearInterval(rot);
+  }, [upcomingPreds]);
 
   useEffect(() => { loadSched(comp); }, [comp]);
   useEffect(() => { if (logsRef.current) logsRef.current.scrollTop = 0; }, [logs]);
@@ -716,36 +924,94 @@ export default function Dashboard() {
 
         {/* ════════ SCHEDULE ════════ */}
         {tab === "schedule" && (
-          <div className="glass" style={{ overflow: "hidden" }}>
-            <div style={{ padding: "14px 18px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, letterSpacing: "1px" }}>COMPETITION</span>
-              <div style={{ position: "relative" }}>
-                <select className="sel" value={comp} onChange={e => setComp(e.target.value)}>
-                  {["PL","CL","PD","SA","BL1","FL1","ELC","PPL","DED"].map(c => <option key={c}>{c}</option>)}
-                </select>
-              </div>
-              <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, marginLeft: "auto" }}>{schedule.length} matches</span>
-            </div>
-            {schedule.length === 0
-              ? <EmptyState icon="📅" title="Tidak ada jadwal" desc="Pilih kompetisi lain atau cek API key" />
-              : <div className="scroll-x">
-                  <table className="tbl">
-                    <thead><tr><th>Home</th><th>Away</th><th>League</th><th>Kickoff</th></tr></thead>
-                    <tbody>
-                      {schedule.map((m, i) => (
-                        <tr key={i}>
-                          <td style={{ fontWeight: 600, whiteSpace: "nowrap" }}>{m.home}</td>
-                          <td style={{ fontWeight: 600, whiteSpace: "nowrap" }}>{m.away}</td>
-                          <td style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted }}>{m.competition}</td>
-                          <td style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 11, color: T.sub, whiteSpace: "nowrap" }}>
-                            {new Date(m.kickoff).toLocaleString("en-GB", { day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" })}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+
+            {/* ── Unknown Team Warning Box ── */}
+            {upcomingPreds.filter(p => p.api_status === "unknown").length > 0 && (
+              <div style={{
+                background: "rgba(255,186,53,.05)", border: "1px solid rgba(255,186,53,.25)",
+                borderRadius: 14, padding: "14px 18px",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <span style={{ fontSize: 14 }}>⚠️</span>
+                  <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, fontWeight: 700, color: T.pend, letterSpacing: "1px" }}>
+                    TIM TIDAK DITEMUKAN DI API · AUTO-HAPUS SETELAH 24H
+                  </span>
                 </div>
-            }
+                {upcomingPreds.filter(p => p.api_status === "unknown").map((p, i) => (
+                  <div key={i} style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                    padding: "7px 12px", marginBottom: 5,
+                    background: "rgba(255,255,255,.03)", borderRadius: 9,
+                    border: "1px solid rgba(255,186,53,.12)",
+                  }}>
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: T.text }}>{p.match_name}</div>
+                      <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 9, color: T.muted, marginTop: 2 }}>
+                        Tidak masuk winrate · tidak ditrack hasil
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 9, color: T.pend }}>
+                        Hapus dalam ~{p.will_expire_hrs?.toFixed(0)}h
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* ── Main schedule table ── */}
+            <div className="glass" style={{ overflow: "hidden" }}>
+              <div style={{ padding: "14px 18px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, letterSpacing: "1px" }}>COMPETITION</span>
+                <div style={{ position: "relative" }}>
+                  <select className="sel" value={comp} onChange={e => setComp(e.target.value)}>
+                    {["PL","CL","PD","SA","BL1","FL1","ELC","PPL","DED"].map(c => <option key={c}>{c}</option>)}
+                  </select>
+                </div>
+                <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, marginLeft: "auto" }}>{schedule.length} matches</span>
+              </div>
+              {schedule.length === 0
+                ? <EmptyState icon="📅" title="Tidak ada jadwal" desc="Pilih kompetisi lain atau cek API key" />
+                : <div className="scroll-x">
+                    <table className="tbl">
+                      <thead><tr><th>Home</th><th>Away</th><th>League</th><th>Kickoff (WIB)</th><th>Countdown</th></tr></thead>
+                      <tbody>
+                        {schedule.map((m, i) => {
+                          const ko = new Date(m.kickoff);
+                          const koWIB = new Date(ko.getTime() + 7 * 3600000);
+                          const secLeft = Math.max(0, Math.floor((ko - Date.now()) / 1000));
+                          const h = Math.floor(secLeft / 3600);
+                          const min = Math.floor((secLeft % 3600) / 60);
+                          const isSoon = secLeft < 3600 && secLeft > 0;
+                          return (
+                            <tr key={i}>
+                              <td style={{ fontWeight: 600, whiteSpace: "nowrap" }}>{m.home}</td>
+                              <td style={{ fontWeight: 600, whiteSpace: "nowrap" }}>{m.away}</td>
+                              <td style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted }}>{m.competition}</td>
+                              <td style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 11, color: T.sub, whiteSpace: "nowrap" }}>
+                                {koWIB.toLocaleString("id-ID", { day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" })}
+                              </td>
+                              <td>
+                                {secLeft === 0
+                                  ? <span className="badge bl">LIVE/DONE</span>
+                                  : <span style={{
+                                      fontFamily:"'JetBrains Mono',monospace", fontSize: 11, fontWeight: 700,
+                                      color: isSoon ? T.pend : T.sub,
+                                    }}>
+                                      {h > 0 ? `${h}h ${min}m` : `${min}m`}
+                                    </span>
+                                }
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+              }
+            </div>
           </div>
         )}
 
@@ -802,6 +1068,17 @@ export default function Dashboard() {
       <div className="desktop-only" style={{ textAlign: "center", padding: "24px 0 32px", fontFamily:"'JetBrains Mono',monospace", fontSize: 9, color: T.dim, letterSpacing: "2px" }}>
         PARLAY AI v4 · FOR ENTERTAINMENT ONLY · BET RESPONSIBLY
       </div>
+
+      {/* ── UPCOMING MATCH POPUP ── */}
+      {upcomingPreds.length > 0 && (
+        <UpcomingPopup
+          pred={upcomingPreds[popupIdx % upcomingPreds.length]}
+          visible={popupVisible}
+          total={upcomingPreds.length}
+          idx={popupIdx}
+          onClose={() => setPopupVisible(false)}
+        />
+      )}
     </>
   );
 }
