@@ -1,9 +1,6 @@
 # ── backend/main.py ───────────────────────────────────────────────────────────
 # FastAPI Backend for Parlay Prediction System
-# - REST API for predictions, stats, results
-# - WebSocket for real-time live log streaming
-# - Auto result tracking via football-data.org API
-# - CORS enabled for Next.js frontend
+# TAMBAHAN: /api/push-parlay endpoint + broadcast parlay final ke WebSocket
 
 import asyncio
 import httpx
@@ -14,8 +11,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Back
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# ── adjust sys.path so we can import from the bot directory ───────────────────
 import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from database import get_db
 from learning_engine import get_learning_engine
@@ -32,17 +29,18 @@ app = FastAPI(title="Parlay Prediction API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # Lock this down in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-FOOTBALL_DATA_BASE = "https://api.football-data.org/v4"
-SUPPORTED_COMPETITIONS = ["PL", "CL", "PD", "SA", "BL1", "FL1", "ELC", "PPL", "DED", "BSA"]
+FOOTBALL_DATA_BASE      = "https://api.football-data.org/v4"
+SUPPORTED_COMPETITIONS  = ["PL", "CL", "PD", "SA", "BL1", "FL1", "ELC", "PPL", "DED", "BSA"]
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# WEBSOCKET MANAGER  (live log broadcast)
+# WEBSOCKET MANAGER
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class ConnectionManager:
@@ -71,7 +69,6 @@ manager = ConnectionManager()
 
 
 async def broadcast_log(event: str, data: dict):
-    """Push a live log event to all connected WebSocket clients."""
     await manager.broadcast({"event": event, "data": data, "ts": datetime.utcnow().isoformat()})
 
 
@@ -118,7 +115,7 @@ async def get_finished_matches(competition_code: str = "PL") -> list:
                 "home":        m["homeTeam"]["name"],
                 "away":        m["awayTeam"]["name"],
                 "kickoff":     m["utcDate"],
-                "score":       {
+                "score": {
                     "home": m["score"]["fullTime"]["home"],
                     "away": m["score"]["fullTime"]["away"],
                 },
@@ -135,10 +132,6 @@ async def get_finished_matches(competition_code: str = "PL") -> list:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def auto_track_results():
-    """
-    Background task: every 30 min, fetch finished matches from football-data API
-    and auto-update pending predictions in DB.
-    """
     db = get_db()
     while True:
         try:
@@ -172,11 +165,10 @@ async def auto_track_results():
         except Exception as e:
             logger.error(f"auto_track_results error: {e}")
 
-        await asyncio.sleep(1800)  # every 30 minutes
+        await asyncio.sleep(1800)
 
 
 def _evaluate_prediction(pred, home_goals: int, away_goals: int) -> Optional[str]:
-    """Simple heuristic to evaluate a prediction against a final score."""
     if pred is None or home_goals is None or away_goals is None:
         return None
     pick = pred.predicted_pick.lower()
@@ -277,7 +269,8 @@ async def list_competitions():
     return {"competitions": SUPPORTED_COMPETITIONS}
 
 
-# Push new prediction result from bot (called internally)
+# ── Push dari bot: prediksi per match ────────────────────────────────────────
+
 class PredictionPush(BaseModel):
     match:       str
     bet_type:    str
@@ -289,7 +282,24 @@ class PredictionPush(BaseModel):
 
 @app.post("/api/push-prediction")
 async def push_prediction(data: PredictionPush):
+    """Bot memanggil endpoint ini setelah tiap match selesai dianalisa."""
     await broadcast_log("new_prediction", data.dict())
+    return {"ok": True}
+
+
+# ── Push dari bot: parlay final ───────────────────────────────────────────────
+
+class ParlayPush(BaseModel):
+    parlay_1x2:  list
+    parlay_ou:   list
+    parlay_ah:   list
+    warning:     str
+    match_count: int
+
+@app.post("/api/push-parlay")
+async def push_parlay(data: ParlayPush):
+    """Bot memanggil endpoint ini setelah parlay final selesai dibangun."""
+    await broadcast_log("parlay_ready", data.dict())
     return {"ok": True}
 
 
@@ -302,7 +312,7 @@ async def websocket_endpoint(ws: WebSocket):
     await manager.connect(ws)
     try:
         while True:
-            await ws.receive_text()   # keep-alive ping
+            await ws.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(ws)
 
