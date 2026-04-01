@@ -37,7 +37,7 @@ app.add_middleware(
 )
 
 FOOTBALL_DATA_BASE      = "https://api.football-data.org/v4"
-SUPPORTED_COMPETITIONS  = ["PL", "CL", "PD", "SA", "BL1", "FL1", "ELC", "PPL", "DED", "BSA"]
+SUPPORTED_COMPETITIONS  = ["PL", "PD", "SA", "BL1", "FL1"]
 
 # ── Team name → ID cache (diisi saat startup dari API) ─────────────────────
 _team_name_to_id: dict[str, int] = {}      # "Liverpool FC" → 64
