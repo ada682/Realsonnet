@@ -38,15 +38,10 @@ app.add_middleware(
 )
 
 # ── TheSportsDB (FREE — tidak perlu daftar, langsung pakai) ──────────────────
-# Docs: https://www.thesportsdb.com/documentation
-# Free key: 123  (bisa diisi key premium kalau punya, tapi 123 sudah cukup)
 TSDB_KEY  = os.getenv("THESPORTSDB_KEY", "123")
 TSDB_BASE = f"https://www.thesportsdb.com/api/v1/json/{TSDB_KEY}"
 
 # Mapping kode liga → League ID di TheSportsDB
-# Cari ID di: https://www.thesportsdb.com/sport/leagues  → pilih liga → lihat URL
-# Contoh: https://www.thesportsdb.com/league/4328  → ID = 4328
-# Semua liga di bawah tersedia di TheSportsDB FREE tier (key = "123")
 LEAGUE_CODE_TO_ID = {
     # ── Top 5 Europe ────────────────────────────────────────────────────────────
     "PL":  "4328",   # English Premier League
@@ -66,7 +61,6 @@ LEAGUE_CODE_TO_ID = {
     "MLS": "4346",   # Major League Soccer (USA)
 }
 SUPPORTED_COMPETITIONS = list(LEAGUE_CODE_TO_ID.keys())
-# Nama display untuk setiap kode (dipakai di log, API response, dsb.)
 COMPETITION_NAMES = {
     "PL":  "Premier League",
     "PD":  "La Liga",
@@ -87,8 +81,8 @@ _unknown_team_predictions: dict[str, datetime] = {}
 UNKNOWN_TEAM_TTL_HOURS = 24
 
 # ── Team name → TheSportsDB team ID cache ─────────────────────────────────────
-_team_name_to_id: dict[str, str] = {}   # "Liverpool" → "133602"
-_team_id_to_name: dict[str, str] = {}   # "133602" → "Liverpool"
+_team_name_to_id: dict[str, str] = {}   # "liverpool" → "133602"
+_team_id_to_name: dict[str, str] = {}   # "133602"   → "Liverpool"
 
 # ── Next match cache ───────────────────────────────────────────────────────────
 _next_match_cache: dict[str, tuple[dict | None, float]] = {}
@@ -96,10 +90,9 @@ NEXT_MATCH_CACHE_TTL = 1800  # 30 menit
 
 # ── Schedule cache (per competition) ───────────────────────────────────────────
 _schedule_cache: dict[str, tuple[list, float]] = {}
-SCHEDULE_CACHE_TTL = 900  # 15 menit — cukup fresh, hemat request
+SCHEDULE_CACHE_TTL = 900  # 15 menit
 
 # ── Global rate-limit semaphore (TheSportsDB free: ~30 req/min) ────────────────
-# Batasi 4 request paralel sekaligus agar tidak 429
 _tsdb_semaphore = asyncio.Semaphore(4)
 
 
@@ -143,8 +136,6 @@ async def broadcast_log(event: str, data: dict):
 async def fetch_tsdb(endpoint: str, params: dict = None, _retries: int = 3) -> dict:
     """
     Fetch dari TheSportsDB v1 API dengan rate-limit guard dan retry/backoff.
-    - Semaphore: maks 4 request paralel
-    - Retry: hingga 3x jika kena 429, dengan exponential backoff (2s, 4s, 8s)
     """
     url = f"{TSDB_BASE}/{endpoint}"
     async with _tsdb_semaphore:
@@ -153,10 +144,8 @@ async def fetch_tsdb(endpoint: str, params: dict = None, _retries: int = 3) -> d
                 async with httpx.AsyncClient(timeout=15) as client:
                     r = await client.get(url, params=params)
                     if r.status_code == 429:
-                        wait = 2 ** (attempt + 1)  # 2, 4, 8 detik
-                        logger.warning(
-                            f"TheSportsDB 429 ({endpoint}), retry #{attempt+1} in {wait}s"
-                        )
+                        wait = 2 ** (attempt + 1)
+                        logger.warning(f"TheSportsDB 429 ({endpoint}), retry #{attempt+1} in {wait}s")
                         await asyncio.sleep(wait)
                         continue
                     r.raise_for_status()
@@ -174,12 +163,41 @@ async def fetch_tsdb(endpoint: str, params: dict = None, _retries: int = 3) -> d
         )
 
 
+def _register_team_from_event(e: dict):
+    """
+    ════════════════════════════════════════════════════════════════════════
+    FIX UTAMA: Daftarkan home & away team langsung dari event/fixture API.
+
+    Kenapa ini penting?
+    - Schedule API (eventsnextleague.php) sudah mengembalikan idHomeTeam &
+      idAwayTeam di setiap event.
+    - Daripada menunggu lookup_all_teams.php (yang jalan 6 jam sekali dan
+      bisa lambat), kita langsung simpan nama → ID ke cache di sini.
+    - Dengan begitu, begitu schedule di-fetch untuk PD (La Liga), tim
+      seperti Rayo Vallecano, Elche, dll LANGSUNG masuk cache dan bisa
+      di-track.
+    ════════════════════════════════════════════════════════════════════════
+    """
+    for prefix in ("Home", "Away"):
+        name = e.get(f"str{prefix}Team", "").strip()
+        tid  = str(e.get(f"id{prefix}Team") or "").strip()
+        if name and tid:
+            key = name.lower()
+            if key not in _team_name_to_id:
+                _team_name_to_id[key] = tid
+                _team_id_to_name[tid] = name
+                logger.debug(f"📌 Team registered from schedule: {name} → {tid}")
+
+
 async def get_upcoming_matches(competition_code: str = "PL", days: int = 7) -> list:
     """
     Ambil fixtures mendatang untuk satu liga.
     Endpoint: eventsnextleague.php?id=<league_id>
-    Free plan: mengembalikan ~15 event berikutnya.
-    Hasil di-cache 15 menit per kompetisi untuk menghindari 429.
+    Free plan: ~15 event berikutnya.
+    Cache 15 menit.
+
+    FIX: Setiap tim di response langsung didaftarkan ke _team_name_to_id
+         via _register_team_from_event() agar bisa di-track.
     """
     import time
     league_id = LEAGUE_CODE_TO_ID.get(competition_code)
@@ -187,7 +205,6 @@ async def get_upcoming_matches(competition_code: str = "PL", days: int = 7) -> l
         logger.warning(f"Kode liga tidak dikenal: {competition_code}")
         return []
 
-    # ── Serve from cache jika masih fresh ────────────────────────────────────
     now_ts = time.time()
     if competition_code in _schedule_cache:
         cached_list, cached_at = _schedule_cache[competition_code]
@@ -202,15 +219,16 @@ async def get_upcoming_matches(competition_code: str = "PL", days: int = 7) -> l
         cutoff = now + timedelta(days=days)
         result = []
         for e in events:
+            # ── FIX: register tim ke cache langsung dari event ────────────
+            _register_team_from_event(e)
+
             kickoff_str = e.get("strTimestamp") or e.get("dateEvent")
             try:
                 if "T" in str(kickoff_str):
                     ko = datetime.fromisoformat(kickoff_str.replace("Z", "+00:00"))
                 else:
-                    # hanya tanggal, pakai jam dari strTime kalau ada
                     t = e.get("strTime", "00:00:00") or "00:00:00"
                     ko = datetime.fromisoformat(f"{kickoff_str}T{t}+00:00")
-                # Make ko timezone-aware if it's naive
                 if ko.tzinfo is None:
                     ko = ko.replace(tzinfo=timezone.utc)
             except Exception:
@@ -227,13 +245,13 @@ async def get_upcoming_matches(competition_code: str = "PL", days: int = 7) -> l
                 "home_id":     e.get("idHomeTeam"),
                 "away_id":     e.get("idAwayTeam"),
             })
-        # ── Simpan ke cache ───────────────────────────────────────────────────
+
         import time as _time
         _schedule_cache[competition_code] = (result, _time.time())
+        logger.info(f"📅 Schedule fetched {competition_code}: {len(result)} matches, team cache now {len(_team_name_to_id)} entries")
         return result
     except Exception as e:
         logger.error(f"get_upcoming_matches error ({competition_code}): {e}")
-        # Kalau ada cached data (even stale), kembalikan itu daripada kosong
         if competition_code in _schedule_cache:
             logger.warning(f"Returning stale cache for {competition_code} after error")
             return _schedule_cache[competition_code][0]
@@ -245,6 +263,8 @@ async def get_finished_matches(competition_code: str = "PL") -> list:
     Ambil hasil pertandingan terakhir untuk satu liga.
     Endpoint: eventspastleague.php?id=<league_id>
     Free plan: ~15 event terakhir.
+
+    FIX: Tim dari past events juga didaftarkan ke cache.
     """
     league_id = LEAGUE_CODE_TO_ID.get(competition_code)
     if not league_id:
@@ -254,7 +274,9 @@ async def get_finished_matches(competition_code: str = "PL") -> list:
         events = data.get("events") or []
         result = []
         for e in events:
-            # Hanya ambil yang sudah ada skor
+            # ── FIX: register tim dari hasil laga juga ────────────────────
+            _register_team_from_event(e)
+
             home_score = e.get("intHomeScore")
             away_score = e.get("intAwayScore")
             if home_score is None or away_score is None:
@@ -278,8 +300,8 @@ async def get_finished_matches(competition_code: str = "PL") -> list:
 
 async def refresh_team_cache():
     """
-    Isi _team_name_to_id dari semua liga yang disupport.
-    Endpoint: lookup_all_teams.php?id=<league_id>
+    Isi _team_name_to_id dari semua liga yang disupport via lookup_all_teams.php.
+    Ini sebagai pelengkap — cache primer sekarang diisi langsung dari schedule.
     """
     global _team_name_to_id, _team_id_to_name
     new_name: dict[str, str] = {}
@@ -294,7 +316,6 @@ async def refresh_team_cache():
                     continue
                 new_name[name.lower()] = tid
                 new_id[tid] = name
-                # alias pendek: "strTeamShort" kalau ada
                 short = t.get("strTeamShort", "")
                 if short:
                     new_name[short.lower()] = tid
@@ -302,17 +323,64 @@ async def refresh_team_cache():
             logger.warning(f"team cache skip {comp_code}: {e}")
     _team_name_to_id.update(new_name)
     _team_id_to_name.update(new_id)
-    logger.info(f"✅ Team cache refreshed: {len(_team_name_to_id)} entries")
+    logger.info(f"✅ Team cache refreshed via lookup_all_teams: {len(_team_name_to_id)} entries")
+
+
+async def _warm_schedule_cache():
+    """
+    ════════════════════════════════════════════════════════════════════════
+    FIX STARTUP: Pre-fetch schedule semua liga saat startup.
+
+    Ini mengisi _team_name_to_id dari semua tim yang ada di jadwal mendatang
+    SEBELUM prediksi pertama masuk, lewat _register_team_from_event().
+    Jauh lebih cepat dari lookup_all_teams karena paralel dan langsung pakai
+    data schedule yang memang dibutuhkan.
+    ════════════════════════════════════════════════════════════════════════
+    """
+    logger.info("🔥 Warming up schedule cache & team registry...")
+    tasks = [get_upcoming_matches(code) for code in SUPPORTED_COMPETITIONS]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    total_teams = len(_team_name_to_id)
+    total_matches = sum(len(r) for r in results if isinstance(r, list))
+    logger.info(f"✅ Schedule warm-up done: {total_matches} matches, {total_teams} teams registered")
 
 
 def _find_team_id(team_name: str) -> Optional[str]:
     """Cari TheSportsDB team ID dari nama tim (case-insensitive, partial match)."""
     key = team_name.lower().strip()
+    # Exact match dulu
     if key in _team_name_to_id:
         return _team_name_to_id[key]
+    # Partial match
     for k, v in _team_name_to_id.items():
         if key in k or k in key:
             return v
+    return None
+
+
+async def _find_team_id_with_search(team_name: str) -> Optional[str]:
+    """
+    Cari team ID: cache dulu → kalau miss, fallback ke searchteams.php API.
+    Berguna untuk tim dari laga friendly / liga tidak terdaftar.
+    """
+    tid = _find_team_id(team_name)
+    if tid:
+        return tid
+    # Fallback: langsung search ke TheSportsDB
+    try:
+        data = await fetch_tsdb("searchteams.php", params={"t": team_name})
+        teams = data.get("teams") or []
+        if teams:
+            t    = teams[0]
+            tid  = str(t.get("idTeam", "")).strip()
+            name = t.get("strTeam", "").strip()
+            if tid and name:
+                _team_name_to_id[name.lower()] = tid
+                _team_id_to_name[tid] = name
+                logger.info(f"🔍 Team found via search fallback: {name} → {tid}")
+                return tid
+    except Exception as ex:
+        logger.warning(f"searchteams fallback failed for '{team_name}': {ex}")
     return None
 
 
@@ -320,7 +388,7 @@ async def get_next_match_for_team(team_id: str) -> Optional[dict]:
     """
     Ambil event berikutnya untuk satu tim.
     Endpoint: eventsnext.php?id=<team_id>
-    Free plan: mengembalikan 1 event (home only). Premium: 10 events.
+    Free plan: 1 event (home only). Premium: 10 events.
     """
     import time
     now = time.time()
@@ -336,6 +404,10 @@ async def get_next_match_for_team(team_id: str) -> Optional[dict]:
             _next_match_cache[team_id] = (None, now)
             return None
         e = events[0]
+
+        # Register tim dari next-match event juga
+        _register_team_from_event(e)
+
         kickoff_str = e.get("strTimestamp") or e.get("dateEvent", "")
         try:
             if "T" in str(kickoff_str):
@@ -343,7 +415,6 @@ async def get_next_match_for_team(team_id: str) -> Optional[dict]:
             else:
                 t = e.get("strTime", "00:00:00") or "00:00:00"
                 ko = datetime.fromisoformat(f"{kickoff_str}T{t}+00:00")
-            # Make ko timezone-aware if it's naive
             if ko.tzinfo is None:
                 ko = ko.replace(tzinfo=timezone.utc)
             kickoff_utc = ko.isoformat()
@@ -366,14 +437,19 @@ async def get_next_match_for_team(team_id: str) -> Optional[dict]:
         return None
 
 
-def _is_team_in_api(match_name: str) -> bool:
+async def _is_team_in_api(match_name: str) -> bool:
+    """
+    FIX: Sekarang async — gunakan fallback search jika tim tidak ada di cache.
+    Ini memastikan tim dari friendly/liga lain tetap bisa di-track.
+    """
     if " vs " not in match_name:
         return False
     parts = match_name.split(" vs ", 1)
-    return (
-        _find_team_id(parts[0].strip()) is not None
-        or _find_team_id(parts[1].strip()) is not None
-    )
+    home_id = await _find_team_id_with_search(parts[0].strip())
+    if home_id:
+        return True
+    away_id = await _find_team_id_with_search(parts[1].strip())
+    return away_id is not None
 
 
 def _cleanup_unknown_predictions():
@@ -465,15 +541,34 @@ def _evaluate_prediction(pred, home_goals: int, away_goals: int) -> Optional[str
 
 @app.on_event("startup")
 async def startup():
+    """
+    FIX STARTUP ORDER:
+    1. Warm up schedule cache dulu (paralel, cepat) → mengisi team registry
+       dari idHomeTeam/idAwayTeam yang sudah ada di setiap event.
+    2. Baru jalankan refresh_team_cache (lookup_all_teams) sebagai pelengkap
+       — tapi tidak di-await agar tidak block startup terlalu lama.
+    3. Tracker & refresh loop jalan di background.
+    """
+    # Step 1: warm schedule → isi team cache dari jadwal aktual (AWAIT, harus selesai dulu)
+    await _warm_schedule_cache()
+
+    # Step 2: lookup_all_teams sebagai pelengkap (fire & forget, tidak block)
+    asyncio.create_task(refresh_team_cache())
+
+    # Step 3: background tasks
     asyncio.create_task(auto_track_results())
     asyncio.create_task(_team_cache_refresh_loop())
+
     logger.info("🚀 Backend started. TheSportsDB API aktif.")
 
 
 async def _team_cache_refresh_loop():
+    """Refresh team cache setiap 6 jam."""
     while True:
-        await refresh_team_cache()
         await asyncio.sleep(6 * 3600)
+        await refresh_team_cache()
+        # Juga re-warm schedule untuk update tim baru
+        await _warm_schedule_cache()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -560,9 +655,19 @@ async def list_competitions():
     return {"competitions": SUPPORTED_COMPETITIONS}
 
 
+@app.get("/api/team-cache")
+async def get_team_cache_info():
+    """Debug endpoint: lihat isi team cache saat ini."""
+    return {
+        "total_teams": len(_team_name_to_id),
+        "teams": {k: v for k, v in sorted(_team_name_to_id.items())},
+    }
+
+
 @app.get("/api/next-match/{team_name}")
 async def get_next_match(team_name: str):
-    team_id = _find_team_id(team_name)
+    # FIX: pakai async search fallback
+    team_id = await _find_team_id_with_search(team_name)
     if team_id is None:
         return {
             "team_name":  team_name,
@@ -580,9 +685,9 @@ async def get_next_match(team_name: str):
             "msg":        "Tidak ada jadwal mendatang",
         }
 
-    kickoff_utc = datetime.fromisoformat(match["kickoff_utc"].replace("Z", "+00:00"))
-    now_utc     = datetime.now(timezone.utc)
-    delta       = kickoff_utc - now_utc
+    kickoff_utc  = datetime.fromisoformat(match["kickoff_utc"].replace("Z", "+00:00"))
+    now_utc      = datetime.now(timezone.utc)
+    delta        = kickoff_utc - now_utc
     seconds_left = max(int(delta.total_seconds()), 0)
     hours_left   = seconds_left // 3600
     mins_left    = (seconds_left % 3600) // 60
@@ -621,13 +726,14 @@ async def get_upcoming_predictions():
     if not pending:
         return []
 
+    # FIX: pakai async search fallback untuk setiap tim
     team_id_map: dict[str, str | None] = {}
     for p in pending:
         mn    = p["match_name"]
         parts = mn.split(" vs ", 1) if " vs " in mn else [mn]
-        tid   = _find_team_id(parts[0].strip())
+        tid   = await _find_team_id_with_search(parts[0].strip())
         if not tid and len(parts) > 1:
-            tid = _find_team_id(parts[1].strip())
+            tid = await _find_team_id_with_search(parts[1].strip())
         team_id_map[mn] = tid
 
     unique_ids = list({v for v in team_id_map.values() if v is not None})
@@ -732,10 +838,17 @@ async def push_prediction(data: PredictionPush):
 
     await broadcast_log("new_prediction", data.dict())
 
-    if not _is_team_in_api(data.match):
+    # FIX: cek async (pakai search fallback) apakah tim ada di API
+    in_api = await _is_team_in_api(data.match)
+    if not in_api:
         if data.match not in _unknown_team_predictions:
             _unknown_team_predictions[data.match] = datetime.now(timezone.utc)
         logger.warning(f"⚠️  Unknown team (24h TTL): {data.match}")
+    else:
+        # Kalau tadinya unknown tapi sekarang ketemu, hapus dari unknown list
+        if data.match in _unknown_team_predictions:
+            del _unknown_team_predictions[data.match]
+            logger.info(f"✅ Team now found, removed from unknown: {data.match}")
 
     return {"ok": True}
 
