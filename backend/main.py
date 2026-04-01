@@ -191,141 +191,78 @@ def _register_team_from_event(e: dict):
                 logger.debug(f"📌 Team registered from schedule: {name} → {tid}")
 
 
-def _parse_event(e: dict, competition_code: str) -> dict | None:
-    """Parse satu event dict dari TheSportsDB ke format internal. Return None kalau gagal parse kickoff."""
-    _register_team_from_event(e)
-    kickoff_str = e.get("strTimestamp") or e.get("dateEvent")
-    try:
-        if "T" in str(kickoff_str):
-            ko = datetime.fromisoformat(kickoff_str.replace("Z", "+00:00"))
-        else:
-            t = e.get("strTime", "00:00:00") or "00:00:00"
-            ko = datetime.fromisoformat(f"{kickoff_str}T{t}+00:00")
-        if ko.tzinfo is None:
-            ko = ko.replace(tzinfo=timezone.utc)
-    except Exception:
-        return None
-    return {
-        "id":          e.get("idEvent"),
-        "competition": e.get("strLeague", competition_code),
-        "home":        e.get("strHomeTeam", ""),
-        "away":        e.get("strAwayTeam", ""),
-        "kickoff":     ko.isoformat(),
-        "status":      e.get("strStatus", "NS"),
-        "home_id":     e.get("idHomeTeam"),
-        "away_id":     e.get("idAwayTeam"),
-    }
-
-
-async def get_upcoming_matches(competition_code: str = "PL", days: int = 14) -> list:
+async def get_upcoming_matches(competition_code: str = "PL", days: int = 60) -> list:
     """
-    Ambil fixtures mendatang untuk satu liga dengan strategi multi-endpoint:
-
-    1. eventsday.php?d=DATE&l=LEAGUE_ID  — Free limit 5 event/hari, kita loop
-       dari hari ini sampai (days) hari ke depan. Ini jauh lebih banyak dari
-       eventsnextleague.php yang hanya return 1 event di free plan.
-    2. eventsseason.php?id=LEAGUE_ID&s=SEASON — Fallback untuk dapat semua event
-       musim ini, lalu difilter by tanggal.
-    3. eventsnextleague.php — Fallback terakhir (1 event saja di free plan).
-
+    Ambil fixtures mendatang untuk satu liga.
+    Endpoint: eventsnextleague.php?id=<league_id>
+    Free plan: ~15 event berikutnya.
     Cache 15 menit.
+
+    FIX: Setiap tim di response langsung didaftarkan ke _team_name_to_id
+         via _register_team_from_event() agar bisa di-track.
+    FIX2: Default days diperluas ke 60, dan SEMUA event dari API dimasukkan
+          (tidak hanya yang dalam 7 hari) supaya user bisa lihat jadwal lebih banyak.
     """
-    import time as _time
+    import time
     league_id = LEAGUE_CODE_TO_ID.get(competition_code)
     if not league_id:
         logger.warning(f"Kode liga tidak dikenal: {competition_code}")
         return []
 
-    now_ts = _time.time()
+    now_ts = time.time()
     if competition_code in _schedule_cache:
         cached_list, cached_at = _schedule_cache[competition_code]
         if now_ts - cached_at < SCHEDULE_CACHE_TTL:
             logger.debug(f"schedule cache hit: {competition_code}")
             return cached_list
 
-    now = datetime.now(timezone.utc)
-    cutoff = now + timedelta(days=days)
-    seen_ids: set = set()
-    result: list = []
-
-    # ── STRATEGI 1: eventsday.php loop per hari ────────────────────────────────
-    # Free limit 5 event/hari. Loop setiap hari → bisa dapat banyak match.
     try:
-        day_tasks = []
-        for d in range(days + 1):
-            date_str = (now + timedelta(days=d)).strftime("%Y-%m-%d")
-            day_tasks.append(
-                fetch_tsdb("eventsday.php", params={"d": date_str, "l": league_id})
-            )
-        day_results = await asyncio.gather(*day_tasks, return_exceptions=True)
+        data = await fetch_tsdb("eventsnextleague.php", params={"id": league_id})
+        events = data.get("events") or []
+        now = datetime.now(timezone.utc)
+        cutoff = now + timedelta(days=days)
+        result = []
+        for e in events:
+            # ── FIX: register tim ke cache langsung dari event ────────────
+            _register_team_from_event(e)
 
-        for resp in day_results:
-            if isinstance(resp, Exception):
+            kickoff_str = e.get("strTimestamp") or e.get("dateEvent")
+            try:
+                if "T" in str(kickoff_str):
+                    ko = datetime.fromisoformat(kickoff_str.replace("Z", "+00:00"))
+                else:
+                    t = e.get("strTime", "00:00:00") or "00:00:00"
+                    ko = datetime.fromisoformat(f"{kickoff_str}T{t}+00:00")
+                if ko.tzinfo is None:
+                    ko = ko.replace(tzinfo=timezone.utc)
+            except Exception:
                 continue
-            for e in (resp.get("events") or []):
-                parsed = _parse_event(e, competition_code)
-                if not parsed:
-                    continue
-                eid = parsed["id"]
-                if eid and eid in seen_ids:
-                    continue
-                ko = datetime.fromisoformat(parsed["kickoff"])
-                if ko < now or ko > cutoff:
-                    continue
-                seen_ids.add(eid)
-                result.append(parsed)
+            # Masukkan semua event yang belum melewati cutoff (default 60 hari)
+            # Event yang sudah lewat (past) juga tetap disertakan agar tidak kosong
+            if ko > cutoff:
+                continue
+            result.append({
+                "id":          e.get("idEvent"),
+                "competition": e.get("strLeague", competition_code),
+                "comp_code":   competition_code,
+                "home":        e.get("strHomeTeam", ""),
+                "away":        e.get("strAwayTeam", ""),
+                "kickoff":     ko.isoformat(),
+                "status":      e.get("strStatus", "NS"),
+                "home_id":     e.get("idHomeTeam"),
+                "away_id":     e.get("idAwayTeam"),
+            })
 
-        logger.info(f"📅 eventsday strategy {competition_code}: {len(result)} matches")
-    except Exception as ex:
-        logger.warning(f"eventsday strategy failed for {competition_code}: {ex}")
-
-    # ── STRATEGI 2: eventsseason.php (musim sekarang) ──────────────────────────
-    # Return semua event satu musim — lebih lengkap, lalu kita filter by range.
-    if len(result) == 0:
-        try:
-            season_year = now.year
-            # Musim sepakbola Eropa biasanya "2024-2025" format
-            season = f"{season_year - 1}-{season_year}" if now.month < 8 else f"{season_year}-{season_year + 1}"
-            data = await fetch_tsdb("eventsseason.php", params={"id": league_id, "s": season})
-            for e in (data.get("events") or []):
-                parsed = _parse_event(e, competition_code)
-                if not parsed:
-                    continue
-                eid = parsed["id"]
-                if eid and eid in seen_ids:
-                    continue
-                ko = datetime.fromisoformat(parsed["kickoff"])
-                if ko < now or ko > cutoff:
-                    continue
-                seen_ids.add(eid)
-                result.append(parsed)
-            logger.info(f"📅 eventsseason strategy {competition_code}: {len(result)} matches after filter")
-        except Exception as ex:
-            logger.warning(f"eventsseason strategy failed for {competition_code}: {ex}")
-
-    # ── STRATEGI 3: eventsnextleague.php (fallback, 1 event di free plan) ─────
-    if len(result) == 0:
-        try:
-            data = await fetch_tsdb("eventsnextleague.php", params={"id": league_id})
-            for e in (data.get("events") or []):
-                parsed = _parse_event(e, competition_code)
-                if not parsed:
-                    continue
-                eid = parsed["id"]
-                if eid and eid in seen_ids:
-                    continue
-                seen_ids.add(eid)
-                result.append(parsed)
-            logger.info(f"📅 fallback eventsnextleague {competition_code}: {len(result)} matches")
-        except Exception as ex:
-            logger.warning(f"eventsnextleague fallback failed for {competition_code}: {ex}")
-
-    # Sort by kickoff ascending
-    result.sort(key=lambda m: m["kickoff"])
-
-    _schedule_cache[competition_code] = (result, _time.time())
-    logger.info(f"📅 Final schedule {competition_code}: {len(result)} matches, team cache {len(_team_name_to_id)} entries")
-    return result
+        import time as _time
+        _schedule_cache[competition_code] = (result, _time.time())
+        logger.info(f"📅 Schedule fetched {competition_code}: {len(result)} matches, team cache now {len(_team_name_to_id)} entries")
+        return result
+    except Exception as e:
+        logger.error(f"get_upcoming_matches error ({competition_code}): {e}")
+        if competition_code in _schedule_cache:
+            logger.warning(f"Returning stale cache for {competition_code} after error")
+            return _schedule_cache[competition_code][0]
+        return []
 
 
 async def get_finished_matches(competition_code: str = "PL") -> list:
@@ -690,36 +627,35 @@ async def get_report():
 
 
 @app.get("/api/schedule")
-async def get_schedule(competition: str = "PL", days: int = 14):
+async def get_schedule(competition: str = "PL"):
     import time
+    # ── Mode ALL: gabungkan jadwal dari semua liga secara paralel ──────────────
+    if competition.upper() == "ALL":
+        tasks = [get_upcoming_matches(code) for code in SUPPORTED_COMPETITIONS]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        all_matches = []
+        for r in results:
+            if isinstance(r, list):
+                all_matches.extend(r)
+        # Sort by kickoff ascending
+        all_matches.sort(key=lambda m: m.get("kickoff", ""))
+        return {
+            "matches": all_matches,
+            "competition": "ALL",
+            "cache_age_sec": None,
+            "from_cache": False,
+            "total": len(all_matches),
+        }
+
     cached = _schedule_cache.get(competition)
     cache_age = round(time.time() - cached[1]) if cached else None
-    matches = await get_upcoming_matches(competition, days=days)
+    matches = await get_upcoming_matches(competition)
     return {
         "matches": matches,
         "competition": competition,
         "cache_age_sec": cache_age,
         "from_cache": cached is not None and cache_age is not None and cache_age < SCHEDULE_CACHE_TTL,
-    }
-
-
-@app.get("/api/schedule/all")
-async def get_schedule_all(days: int = 14):
-    """
-    Ambil jadwal dari SEMUA kompetisi yang didukung sekaligus, digabung dan diurutkan by kickoff.
-    Berguna untuk tampilan All Competitions di frontend.
-    """
-    tasks = [get_upcoming_matches(code, days=days) for code in SUPPORTED_COMPETITIONS]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    all_matches = []
-    for matches in results:
-        if isinstance(matches, list):
-            all_matches.extend(matches)
-    all_matches.sort(key=lambda m: m.get("kickoff", ""))
-    return {
-        "matches": all_matches,
-        "competition": "ALL",
-        "total": len(all_matches),
+        "total": len(matches),
     }
 
 
