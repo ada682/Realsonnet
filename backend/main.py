@@ -56,6 +56,7 @@ LEAGUE_CODE_TO_ID = {
     "ELC": "4329",   # English Championship (2nd div)
     "PPL": "4344",   # Primeira Liga (Portugal)
     "DED": "4337",   # Eredivisie (Netherlands)
+    "ALG": "4356",
     # ── Americas ────────────────────────────────────────────────────────────────
     "BSA": "4351",   # Brasileirão Série A
     "MLS": "4346",   # Major League Soccer (USA)
@@ -72,6 +73,7 @@ COMPETITION_NAMES = {
     "ELC": "Championship",
     "PPL": "Primeira Liga",
     "DED": "Eredivisie",
+    "ALG": "A-League",
     "BSA": "Brasileirão",
     "MLS": "MLS",
 }
