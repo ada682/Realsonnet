@@ -145,6 +145,9 @@ async def get_upcoming_matches(competition_code: str = "PL", days: int = 7) -> l
                     # hanya tanggal, pakai jam dari strTime kalau ada
                     t = e.get("strTime", "00:00:00") or "00:00:00"
                     ko = datetime.fromisoformat(f"{kickoff_str}T{t}+00:00")
+                # Make ko timezone-aware if it's naive
+                if ko.tzinfo is None:
+                    ko = ko.replace(tzinfo=timezone.utc)
             except Exception:
                 continue
             if ko > cutoff:
@@ -268,6 +271,9 @@ async def get_next_match_for_team(team_id: str) -> Optional[dict]:
             else:
                 t = e.get("strTime", "00:00:00") or "00:00:00"
                 ko = datetime.fromisoformat(f"{kickoff_str}T{t}+00:00")
+            # Make ko timezone-aware if it's naive
+            if ko.tzinfo is None:
+                ko = ko.replace(tzinfo=timezone.utc)
             kickoff_utc = ko.isoformat()
         except Exception:
             kickoff_utc = kickoff_str
