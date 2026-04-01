@@ -867,6 +867,132 @@ async def push_parlay(data: ParlayPush):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# MANUAL RESULT ENDPOINT  ← BARU: fallback kalau API bola limit
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ManualResultPush(BaseModel):
+    prediction_id: int
+    match_name:    str
+    pick:          str
+    bet_type:      str
+    outcome:       str   # 'win' atau 'loss'
+    manual:        bool  = True
+
+
+@app.post("/api/manual-result")
+async def push_manual_result(data: ManualResultPush):
+    """
+    Dipanggil dari bot Telegram setelah admin input /hasil.
+    Broadcast event result_update ke semua WebSocket client → web update realtime.
+    """
+    if data.outcome not in ("win", "loss"):
+        raise HTTPException(status_code=400, detail="outcome must be 'win' or 'loss'")
+
+    # Ambil stats terkini untuk disertakan di broadcast
+    db = get_db()
+    stats = db.get_overall_stats()
+
+    await broadcast_log("result_update", {
+        "prediction_id": data.prediction_id,
+        "match_name":    data.match_name,
+        "pick":          data.pick,
+        "bet_type":      data.bet_type,
+        "outcome":       data.outcome,
+        "manual":        data.manual,
+        "stats": {
+            "win_rate":  stats["win_rate"],
+            "wins":      stats["wins"],
+            "losses":    stats["losses"],
+            "total":     stats["total_predictions"],
+        }
+    })
+
+    logger.info(f"📥 Manual result received: {data.match_name} → {data.outcome}")
+    return {"ok": True, "stats": stats}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HISTORY ENDPOINT  ← BARU: untuk tab History di web
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/history")
+async def get_history(limit: int = 50, offset: int = 0):
+    """
+    Kembalikan semua prediksi yang SUDAH ada hasilnya (win/loss),
+    diurutkan dari yang paling baru.
+    Dipakai oleh tab History di frontend.
+    """
+    db = get_db()
+    with db._get_conn() as conn:
+        rows = conn.execute("""
+            SELECT
+                p.id,
+                p.match_name,
+                p.bet_type,
+                p.predicted_pick,
+                p.confidence,
+                p.include_in_parlay,
+                p.created_at,
+                r.outcome,
+                r.actual_result,
+                r.score,
+                r.notes,
+                r.recorded_at
+            FROM predictions p
+            JOIN match_results r ON p.id = r.prediction_id
+            ORDER BY r.recorded_at DESC
+            LIMIT ? OFFSET ?
+        """, (limit, offset)).fetchall()
+
+        total = conn.execute("""
+            SELECT COUNT(*) FROM predictions p
+            JOIN match_results r ON p.id = r.prediction_id
+        """).fetchone()[0]
+
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "items": [dict(r) for r in rows],
+    }
+
+
+@app.get("/api/stats-summary")
+async def get_stats_summary():
+    """
+    Stats ringkas untuk header web: total, win rate, streak.
+    """
+    db = get_db()
+    stats    = db.get_overall_stats()
+    bt_stats = db.get_bet_type_stats()
+
+    # Hitung streak saat ini (berapa WIN beruntun dari terbaru)
+    with db._get_conn() as conn:
+        recent = conn.execute("""
+            SELECT outcome FROM match_results
+            ORDER BY recorded_at DESC
+            LIMIT 20
+        """).fetchall()
+
+    streak = 0
+    streak_type = None
+    for row in recent:
+        if streak_type is None:
+            streak_type = row['outcome']
+        if row['outcome'] == streak_type:
+            streak += 1
+        else:
+            break
+
+    return {
+        **stats,
+        "bet_type_stats": bt_stats,
+        "streak":         streak,
+        "streak_type":    streak_type,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # WEBSOCKET
 # ═══════════════════════════════════════════════════════════════════════════════
 
