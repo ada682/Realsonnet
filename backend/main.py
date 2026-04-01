@@ -4,8 +4,9 @@
 
 import asyncio
 import httpx
+import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,6 +38,15 @@ app.add_middleware(
 
 FOOTBALL_DATA_BASE      = "https://api.football-data.org/v4"
 SUPPORTED_COMPETITIONS  = ["PL", "CL", "PD", "SA", "BL1", "FL1", "ELC", "PPL", "DED", "BSA"]
+
+# ── Team name → ID cache (diisi saat startup dari API) ─────────────────────
+_team_name_to_id: dict[str, int] = {}      # "Liverpool FC" → 64
+_team_id_to_name: dict[int, str] = {}      # 64 → "Liverpool FC"
+
+# ── Prediksi dari AI untuk tim yang TIDAK ditemukan di football-data API ──
+# Format: { "Manchester City vs Bayern": datetime_added }
+_unknown_team_predictions: dict[str, datetime] = {}
+UNKNOWN_TEAM_TTL_HOURS = 24                # hapus setelah 24 jam
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -91,6 +101,8 @@ async def get_upcoming_matches(competition_code: str = "PL", days: int = 7) -> l
         return [
             {
                 "id":          m["id"],
+                "home_id":     m["homeTeam"]["id"],
+                "away_id":     m["awayTeam"]["id"],
                 "competition": m["competition"]["name"],
                 "home":        m["homeTeam"]["name"],
                 "away":        m["awayTeam"]["name"],
@@ -111,6 +123,8 @@ async def get_finished_matches(competition_code: str = "PL") -> list:
         return [
             {
                 "id":          m["id"],
+                "home_id":     m["homeTeam"]["id"],
+                "away_id":     m["awayTeam"]["id"],
                 "competition": m["competition"]["name"],
                 "home":        m["homeTeam"]["name"],
                 "away":        m["awayTeam"]["name"],
@@ -127,6 +141,85 @@ async def get_finished_matches(competition_code: str = "PL") -> list:
         return []
 
 
+async def refresh_team_cache():
+    """Ambil semua tim dari semua liga yang disupport, simpan ke cache nama→ID."""
+    global _team_name_to_id, _team_id_to_name
+    new_name_map: dict[str, int] = {}
+    new_id_map:   dict[int, str] = {}
+    for comp in SUPPORTED_COMPETITIONS:
+        try:
+            data = await fetch_football_data(f"/competitions/{comp}/teams")
+            for t in data.get("teams", []):
+                tid  = t["id"]
+                name = t["name"]
+                new_name_map[name.lower()] = tid
+                new_id_map[tid] = name
+                # juga simpan shortName / tla kalau ada
+                if t.get("shortName"):
+                    new_name_map[t["shortName"].lower()] = tid
+                if t.get("tla"):
+                    new_name_map[t["tla"].lower()] = tid
+        except Exception as e:
+            logger.warning(f"team cache refresh skip {comp}: {e}")
+    _team_name_to_id.update(new_name_map)
+    _team_id_to_name.update(new_id_map)
+    logger.info(f"✅ Team cache refreshed: {len(_team_name_to_id)} entries")
+
+
+def _find_team_id(team_name: str) -> Optional[int]:
+    """Cari team ID dari nama tim (fuzzy, case-insensitive)."""
+    key = team_name.lower().strip()
+    if key in _team_name_to_id:
+        return _team_name_to_id[key]
+    # partial match
+    for k, v in _team_name_to_id.items():
+        if key in k or k in key:
+            return v
+    return None
+
+
+async def get_next_match_for_team(team_id: int) -> Optional[dict]:
+    """Ambil 1 pertandingan terdekat (SCHEDULED) untuk team_id tertentu."""
+    try:
+        data = await fetch_football_data(f"/v4/teams/{team_id}/matches?status=SCHEDULED&limit=5")
+        matches = data.get("matches", [])
+        if not matches:
+            return None
+        m = matches[0]
+        return {
+            "id":          m["id"],
+            "competition": m["competition"]["name"],
+            "home":        m["homeTeam"]["name"],
+            "away":        m["awayTeam"]["name"],
+            "kickoff_utc": m["utcDate"],
+            "status":      m["status"],
+        }
+    except Exception as e:
+        logger.warning(f"get_next_match_for_team {team_id}: {e}")
+        return None
+
+
+def _is_team_in_api(match_name: str) -> bool:
+    """Cek apakah salah satu tim dalam 'Home vs Away' ada di cache API."""
+    if " vs " not in match_name:
+        return False
+    parts = match_name.split(" vs ", 1)
+    home_found = _find_team_id(parts[0].strip()) is not None
+    away_found = _find_team_id(parts[1].strip()) is not None
+    return home_found or away_found
+
+
+def _cleanup_unknown_predictions():
+    """Hapus prediksi tim unknown yang sudah lebih dari 24 jam."""
+    now = datetime.now(timezone.utc)
+    expired = [k for k, ts in _unknown_team_predictions.items()
+               if (now - ts).total_seconds() > UNKNOWN_TEAM_TTL_HOURS * 3600]
+    for k in expired:
+        del _unknown_team_predictions[k]
+        logger.info(f"🗑️  Removed expired unknown-team prediction: {k}")
+    return expired
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # AUTO RESULT TRACKER
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -135,6 +228,11 @@ async def auto_track_results():
     db = get_db()
     while True:
         try:
+            # ── Cleanup tim unknown yang sudah expired ──
+            expired = _cleanup_unknown_predictions()
+            if expired:
+                await broadcast_log("system", {"msg": f"Removed {len(expired)} expired unknown-team predictions"})
+
             for comp in SUPPORTED_COMPETITIONS:
                 finished = await get_finished_matches(comp)
                 for match in finished:
@@ -201,7 +299,15 @@ def _evaluate_prediction(pred, home_goals: int, away_goals: int) -> Optional[str
 @app.on_event("startup")
 async def startup():
     asyncio.create_task(auto_track_results())
-    logger.info("🚀 Backend started. Auto-tracker running.")
+    asyncio.create_task(_team_cache_refresh_loop())
+    logger.info("🚀 Backend started. Auto-tracker + team cache running.")
+
+
+async def _team_cache_refresh_loop():
+    """Refresh team cache setiap 6 jam."""
+    while True:
+        await refresh_team_cache()
+        await asyncio.sleep(6 * 3600)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -269,6 +375,133 @@ async def list_competitions():
     return {"competitions": SUPPORTED_COMPETITIONS}
 
 
+@app.get("/api/next-match/{team_name}")
+async def get_next_match(team_name: str):
+    """
+    Cari pertandingan terdekat untuk satu tim.
+    Kalau tim tidak ada di API → return not_in_api: true
+    """
+    team_id = _find_team_id(team_name)
+    if team_id is None:
+        return {
+            "team_name":   team_name,
+            "not_in_api":  True,
+            "next_match":  None,
+            "msg":         f"Team '{team_name}' tidak ditemukan di football-data API",
+        }
+    match = await get_next_match_for_team(team_id)
+    if match is None:
+        return {
+            "team_name":  team_name,
+            "team_id":    team_id,
+            "not_in_api": False,
+            "next_match": None,
+            "msg":        "Tidak ada jadwal mendatang",
+        }
+
+    # Hitung time_left ke kickoff (WIB +7)
+    kickoff_utc = datetime.fromisoformat(match["kickoff_utc"].replace("Z", "+00:00"))
+    now_utc     = datetime.now(timezone.utc)
+    delta       = kickoff_utc - now_utc
+    seconds_left = max(int(delta.total_seconds()), 0)
+    hours_left   = seconds_left // 3600
+    mins_left    = (seconds_left % 3600) // 60
+
+    # Konversi ke WIB
+    kickoff_wib = kickoff_utc + timedelta(hours=7)
+
+    return {
+        "team_name":     team_name,
+        "team_id":       team_id,
+        "not_in_api":    False,
+        "next_match":    {
+            **match,
+            "kickoff_wib":   kickoff_wib.strftime("%Y-%m-%dT%H:%M:%S+07:00"),
+            "time_left_sec": seconds_left,
+            "time_left_str": f"{hours_left}h {mins_left}m" if hours_left > 0 else f"{mins_left}m",
+            "already_started": seconds_left == 0,
+        },
+    }
+
+
+@app.get("/api/upcoming-predictions")
+async def get_upcoming_predictions():
+    """
+    Ambil semua prediksi pending + cek next match dari API untuk masing-masing tim.
+    Prediksi tim yang sudah selesai (finished) → tandai untuk dihapus dari tampilan.
+    Prediksi tim yang tidak ada di API → tandai 'unknown', akan auto-hapus setelah 24h.
+    """
+    db = get_db()
+    with db._get_conn() as conn:
+        rows = conn.execute("""
+            SELECT p.id, p.match_name, p.bet_type, p.predicted_pick,
+                   p.confidence, p.include_in_parlay, p.created_at,
+                   r.outcome, r.actual_result
+            FROM predictions p
+            LEFT JOIN match_results r ON p.id = r.prediction_id
+            WHERE r.outcome IS NULL
+            ORDER BY p.created_at DESC
+            LIMIT 30
+        """).fetchall()
+
+    result = []
+    for row in rows:
+        d          = dict(row)
+        match_name = d["match_name"]
+
+        # Cek apakah ada di API
+        in_api = _is_team_in_api(match_name)
+
+        if not in_api:
+            # Tandai sebagai unknown, mulai timer 24 jam kalau belum ada
+            if match_name not in _unknown_team_predictions:
+                _unknown_team_predictions[match_name] = datetime.now(timezone.utc)
+            ts      = _unknown_team_predictions[match_name]
+            age_hrs = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
+            d["api_status"]      = "unknown"
+            d["unknown_age_hrs"] = round(age_hrs, 1)
+            d["will_expire_hrs"] = round(UNKNOWN_TEAM_TTL_HOURS - age_hrs, 1)
+            d["next_match"]      = None
+            result.append(d)
+            continue
+
+        # Cari team ID → next match
+        parts   = match_name.split(" vs ", 1) if " vs " in match_name else [match_name]
+        team_id = _find_team_id(parts[0].strip())
+        if not team_id and len(parts) > 1:
+            team_id = _find_team_id(parts[1].strip())
+
+        next_m = None
+        if team_id:
+            next_m = await get_next_match_for_team(team_id)
+
+        if next_m:
+            kickoff_utc  = datetime.fromisoformat(next_m["kickoff_utc"].replace("Z", "+00:00"))
+            now_utc      = datetime.now(timezone.utc)
+            delta        = kickoff_utc - now_utc
+            seconds_left = max(int(delta.total_seconds()), 0)
+            kickoff_wib  = kickoff_utc + timedelta(hours=7)
+            next_m["kickoff_wib"]    = kickoff_wib.strftime("%Y-%m-%dT%H:%M:%S+07:00")
+            next_m["time_left_sec"]  = seconds_left
+            hours_left               = seconds_left // 3600
+            mins_left                = (seconds_left % 3600) // 60
+            next_m["time_left_str"]  = f"{hours_left}h {mins_left}m" if hours_left > 0 else f"{mins_left}m"
+            next_m["already_started"] = seconds_left == 0
+
+        d["api_status"] = "found"
+        d["next_match"] = next_m
+        result.append(d)
+
+    return result
+
+
+@app.delete("/api/cleanup-unknown")
+async def cleanup_unknown():
+    """Manual trigger untuk hapus prediksi tim unknown yang expired."""
+    expired = _cleanup_unknown_predictions()
+    return {"removed": expired, "count": len(expired)}
+
+
 # ── Push dari bot: prediksi per match ────────────────────────────────────────
 
 class PredictionPush(BaseModel):
@@ -323,6 +556,13 @@ async def push_prediction(data: PredictionPush):
 
     # ── Broadcast ke semua WebSocket client ──
     await broadcast_log("new_prediction", data.dict())
+
+    # ── Cek apakah tim ada di API, kalau tidak → track sebagai unknown ──
+    if not _is_team_in_api(data.match):
+        if data.match not in _unknown_team_predictions:
+            _unknown_team_predictions[data.match] = datetime.now(timezone.utc)
+        logger.warning(f"⚠️  Team not in API, tracked as unknown (24h TTL): {data.match}")
+
     return {"ok": True}
 
 
