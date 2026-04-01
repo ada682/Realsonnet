@@ -24,6 +24,12 @@ except ImportError:
     FOOTBALL_DATA_API_KEY = os.getenv("FOOTBALL_DATA_API_KEY", "")
     SECRET_KEY            = os.getenv("SECRET_KEY", "changeme")
 
+# API-Football v3 (api-sports.io) — free plan, no CC required
+# Daftar di: https://dashboard.api-football.com
+# Set env var: API_FOOTBALL_KEY=<api_key_kamu>
+# Kalau belum set, fallback ke FOOTBALL_DATA_API_KEY (untuk backward compat)
+API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY", FOOTBALL_DATA_API_KEY)
+
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Parlay Prediction API", version="1.0.0")
@@ -36,12 +42,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-FOOTBALL_DATA_BASE      = "https://api.football-data.org/v4"
-SUPPORTED_COMPETITIONS = ["PL", "PD", "SA", "BL1", "FL1"]
+# ── API-Football v3 (api-sports.io) ──────────────────────────────────────────
+# Base URL baru — berbeda dari football-data.org yang lama
+API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 
-# Liga yang tersedia di free tier untuk endpoint /competitions/{code}/teams
-# FL1 (Ligue 1) sering tidak tersedia di free plan → gunakan list terpisah
-TEAM_CACHE_COMPETITIONS = ["PL", "PD", "SA", "BL1"]
+# Mapping kode liga → league ID di API-Football v3
+# Referensi: https://dashboard.api-football.com → Ids → Leagues
+LEAGUE_CODE_TO_ID = {
+    "PL":  39,   # Premier League (England)
+    "PD":  140,  # La Liga (Spain)
+    "SA":  135,  # Serie A (Italy)
+    "BL1": 78,   # Bundesliga (Germany)
+    "FL1": 61,   # Ligue 1 (France)
+    "UCL": 2,    # UEFA Champions League
+}
+SUPPORTED_COMPETITIONS = list(LEAGUE_CODE_TO_ID.keys())
+CURRENT_SEASON = 2025  # season 2025/26 → pakai tahun mulai
 
 # ── Team name → ID cache (diisi saat startup dari API) ─────────────────────
 _team_name_to_id: dict[str, int] = {}      # "Liverpool FC" → 64
@@ -90,33 +106,56 @@ async def broadcast_log(event: str, data: dict):
 # FOOTBALL DATA API HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def fetch_football_data(path: str) -> dict:
-    headers = {"X-Auth-Token": FOOTBALL_DATA_API_KEY}
+async def fetch_football_data(path: str, params: dict = None) -> dict:
+    """Fetch dari API-Football v3 (api-sports.io).
+    
+    Header: x-apisports-key
+    Base URL: https://v3.football.api-sports.io
+    Docs: https://www.api-football.com/documentation-v3
+    """
+    headers = {"x-apisports-key": API_FOOTBALL_KEY}
     async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.get(f"{FOOTBALL_DATA_BASE}{path}", headers=headers)
+        r = await client.get(f"{API_FOOTBALL_BASE}{path}", headers=headers, params=params)
         r.raise_for_status()
-        return r.json()
+        data = r.json()
+        # API-Football v3 selalu wrap response dalam {"response": [...], "errors": {}}
+        if data.get("errors"):
+            logger.error(f"API-Football error: {data['errors']}")
+        return data
 
 
 async def get_upcoming_matches(competition_code: str = "PL", days: int = 7) -> list:
+    """Ambil pertandingan mendatang menggunakan API-Football v3.
+    
+    Endpoint: GET /fixtures
+    Params: league (int), season (int), from (date), to (date)
+    Status NS = Not Started (belum mulai), TBD = waktu belum ditentukan
+    """
     try:
+        league_id = LEAGUE_CODE_TO_ID.get(competition_code)
+        if not league_id:
+            logger.warning(f"Kode liga tidak dikenal: {competition_code}")
+            return []
         today  = datetime.utcnow().date()
         future = today + timedelta(days=days)
-        # Gunakan endpoint global /matches (support dateFrom/dateTo di semua tier)
-        # Endpoint /competitions/{code}/matches?dateFrom=... butuh tier berbayar
-        path   = f"/matches?dateFrom={today}&dateTo={future}&competitions={competition_code}"
-        data   = await fetch_football_data(path)
-        matches = [m for m in data.get("matches", []) if m.get("status") in ("SCHEDULED", "TIMED")][:20]
+        data = await fetch_football_data("/fixtures", params={
+            "league":  league_id,
+            "season":  CURRENT_SEASON,
+            "from":    str(today),
+            "to":      str(future),
+            "status":  "NS-TBD",   # Not Started + TBD
+        })
+        matches = data.get("response", [])[:20]
         return [
             {
-                "id":          m["id"],
-                "home_id":     m["homeTeam"]["id"],
-                "away_id":     m["awayTeam"]["id"],
-                "competition": m["competition"]["name"],
-                "home":        m["homeTeam"]["name"],
-                "away":        m["awayTeam"]["name"],
-                "kickoff":     m["utcDate"],
-                "status":      m["status"],
+                "id":          m["fixture"]["id"],
+                "home_id":     m["teams"]["home"]["id"],
+                "away_id":     m["teams"]["away"]["id"],
+                "competition": m["league"]["name"],
+                "home":        m["teams"]["home"]["name"],
+                "away":        m["teams"]["away"]["name"],
+                "kickoff":     m["fixture"]["date"],
+                "status":      m["fixture"]["status"]["short"],
             }
             for m in matches
         ]
@@ -126,26 +165,38 @@ async def get_upcoming_matches(competition_code: str = "PL", days: int = 7) -> l
 
 
 async def get_finished_matches(competition_code: str = "PL") -> list:
+    """Ambil pertandingan selesai 7 hari terakhir menggunakan API-Football v3.
+    
+    Endpoint: GET /fixtures
+    Status FT = Full Time, AET = After Extra Time, PEN = After Penalties
+    """
     try:
+        league_id = LEAGUE_CODE_TO_ID.get(competition_code)
+        if not league_id:
+            logger.warning(f"Kode liga tidak dikenal: {competition_code}")
+            return []
         today = datetime.utcnow().date()
         past  = today - timedelta(days=7)
-        # Gunakan endpoint global /matches (support dateFrom/dateTo di semua tier)
-        data  = await fetch_football_data(
-            f"/matches?dateFrom={past}&dateTo={today}&status=FINISHED&competitions={competition_code}"
-        )
-        matches = [m for m in data.get("matches", []) if m.get("status") == "FINISHED"][:20]
+        data = await fetch_football_data("/fixtures", params={
+            "league":  league_id,
+            "season":  CURRENT_SEASON,
+            "from":    str(past),
+            "to":      str(today),
+            "status":  "FT-AET-PEN",  # Full Time, After ET, After Penalties
+        })
+        matches = data.get("response", [])[:20]
         return [
             {
-                "id":          m["id"],
-                "home_id":     m["homeTeam"]["id"],
-                "away_id":     m["awayTeam"]["id"],
-                "competition": m["competition"]["name"],
-                "home":        m["homeTeam"]["name"],
-                "away":        m["awayTeam"]["name"],
-                "kickoff":     m["utcDate"],
+                "id":          m["fixture"]["id"],
+                "home_id":     m["teams"]["home"]["id"],
+                "away_id":     m["teams"]["away"]["id"],
+                "competition": m["league"]["name"],
+                "home":        m["teams"]["home"]["name"],
+                "away":        m["teams"]["away"]["name"],
+                "kickoff":     m["fixture"]["date"],
                 "score": {
-                    "home": m["score"]["fullTime"]["home"],
-                    "away": m["score"]["fullTime"]["away"],
+                    "home": m["goals"]["home"],
+                    "away": m["goals"]["away"],
                 },
             }
             for m in matches
@@ -156,29 +207,33 @@ async def get_finished_matches(competition_code: str = "PL") -> list:
 
 
 async def refresh_team_cache():
-    """Ambil semua tim dari liga yang support endpoint /teams, simpan ke cache nama→ID.
+    """Ambil semua tim dari semua liga yang disupport menggunakan API-Football v3.
     
-    Catatan: Tidak semua liga tersedia di free tier untuk endpoint /competitions/{code}/teams.
-    Gunakan TEAM_CACHE_COMPETITIONS (tanpa FL1) untuk menghindari error 400/403.
+    Endpoint: GET /teams?league=<id>&season=<year>
+    Response: {"response": [{"team": {"id":..,"name":..,"code":..}, "venue": {...}}, ...]}
     """
     global _team_name_to_id, _team_id_to_name
     new_name_map: dict[str, int] = {}
     new_id_map:   dict[int, str] = {}
-    for comp in TEAM_CACHE_COMPETITIONS:
+    for comp_code, league_id in LEAGUE_CODE_TO_ID.items():
         try:
-            data = await fetch_football_data(f"/competitions/{comp}/teams")
-            for t in data.get("teams", []):
-                tid  = t["id"]
-                name = t["name"]
+            data = await fetch_football_data("/teams", params={
+                "league": league_id,
+                "season": CURRENT_SEASON,
+            })
+            for item in data.get("response", []):
+                t    = item.get("team", {})
+                tid  = t.get("id")
+                name = t.get("name", "")
+                if not tid or not name:
+                    continue
                 new_name_map[name.lower()] = tid
                 new_id_map[tid] = name
-                # juga simpan shortName / tla kalau ada
-                if t.get("shortName"):
-                    new_name_map[t["shortName"].lower()] = tid
-                if t.get("tla"):
-                    new_name_map[t["tla"].lower()] = tid
+                # simpan juga kode pendek (code), misal "LIV", "MCI"
+                if t.get("code"):
+                    new_name_map[t["code"].lower()] = tid
         except Exception as e:
-            logger.warning(f"team cache refresh skip {comp}: {e} — kompetisi ini mungkin tidak tersedia di tier kamu")
+            logger.warning(f"team cache refresh skip {comp_code} (league {league_id}): {e}")
     _team_name_to_id.update(new_name_map)
     _team_id_to_name.update(new_id_map)
     logger.info(f"✅ Team cache refreshed: {len(_team_name_to_id)} entries")
@@ -213,19 +268,24 @@ async def get_next_match_for_team(team_id: int) -> Optional[dict]:
             return cached_match
 
     try:
-        data = await fetch_football_data(f"/teams/{team_id}/matches?status=SCHEDULED&limit=5")
-        matches = data.get("matches", [])
+        # API-Football v3: GET /fixtures?team=<id>&next=5
+        data = await fetch_football_data("/fixtures", params={
+            "team":   team_id,
+            "next":   5,
+            "season": CURRENT_SEASON,
+        })
+        matches = data.get("response", [])
         if not matches:
             _next_match_cache[team_id] = (None, now)
             return None
         m = matches[0]
         result = {
-            "id":          m["id"],
-            "competition": m["competition"]["name"],
-            "home":        m["homeTeam"]["name"],
-            "away":        m["awayTeam"]["name"],
-            "kickoff_utc": m["utcDate"],
-            "status":      m["status"],
+            "id":          m["fixture"]["id"],
+            "competition": m["league"]["name"],
+            "home":        m["teams"]["home"]["name"],
+            "away":        m["teams"]["away"]["name"],
+            "kickoff_utc": m["fixture"]["date"],
+            "status":      m["fixture"]["status"]["short"],
         }
         _next_match_cache[team_id] = (result, now)
         return result
