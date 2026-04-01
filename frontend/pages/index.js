@@ -580,7 +580,13 @@ export default function Dashboard() {
     try {
       const data = await fetch(`${API}/api/upcoming-predictions`).then(r => r.json());
       if (Array.isArray(data) && data.length > 0) {
-        setUpcomingPreds(data.filter(p => !p.outcome));
+        // Hanya tampilkan prediksi yang matchnya belum mulai (time_left_sec > 0 atau tidak ada match)
+        const genuine = data.filter(p =>
+          !p.outcome &&
+          !(p.next_match?.already_started) &&
+          (p.next_match?.time_left_sec == null || p.next_match.time_left_sec > 0)
+        );
+        setUpcomingPreds(genuine);
         return;
       }
     } catch (_) {
@@ -671,22 +677,29 @@ export default function Dashboard() {
     return () => { clearTimeout(timer); clearInterval(interval); ws?.close(); };
   }, []);
 
-  // ── Popup rotation: ganti setiap 7 detik, skip kalau user close ──
+  // ── Popup rotation: ganti setiap 12 detik, dismissed cooldown 5 menit ──
+  const popupCooldownRef = useRef(null);  // timestamp kapan boleh muncul lagi
+
   useEffect(() => {
     if (upcomingPreds.length === 0) { setPopupVisible(false); return; }
-    // Ada data baru → reset dismissed, munculkan lagi
-    setPopupDismissed(false);
+
+    // Cek apakah sedang dalam cooldown (user baru close)
+    const now = Date.now();
+    const cooldownUntil = popupCooldownRef.current || 0;
+    if (now < cooldownUntil) return;  // masih cooldown, jangan paksa muncul
+
+    // Munculkan popup
     setPopupIdx(0);
-    setTimeout(() => setPopupVisible(true), 300);  // delay kecil supaya smooth
+    setTimeout(() => setPopupVisible(true), 300);
 
     const rot = setInterval(() => {
+      if (upcomingPreds.length <= 1) return;  // kalau cuma 1 prediksi, tidak perlu rotasi
       setPopupVisible(false);
       setTimeout(() => {
         setPopupIdx(prev => (prev + 1) % upcomingPreds.length);
-        setPopupDismissed(false);
         setTimeout(() => setPopupVisible(true), 50);
       }, 380);
-    }, 7000);
+    }, 12000);  // ganti setiap 12 detik, lebih santai
     return () => clearInterval(rot);
   }, [upcomingPreds]);
 
@@ -1134,13 +1147,17 @@ export default function Dashboard() {
       </div>
 
       {/* ── UPCOMING MATCH POPUP ── */}
-      {upcomingPreds.length > 0 && !popupDismissed && (
+      {upcomingPreds.length > 0 && !popupDismissed && popupVisible && (
         <UpcomingPopup
           pred={upcomingPreds[popupIdx % upcomingPreds.length]}
           visible={popupVisible}
           total={upcomingPreds.length}
           idx={popupIdx}
-          onClose={() => { setPopupVisible(false); setPopupDismissed(true); }}
+          onClose={() => {
+            setPopupVisible(false);
+            setPopupDismissed(true);
+            popupCooldownRef.current = Date.now() + 5 * 60 * 1000;  // cooldown 5 menit
+          }}
         />
       )}
     </>
