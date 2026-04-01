@@ -323,7 +323,7 @@ const ParlayPanel = ({ p }) => {
 
 /* ─── TICKER ─────────────────────────────────────────────────────────────── */
 const Ticker = ({ preds }) => {
-  const recent = preds.filter(p => p.outcome).slice(0, 12);
+  const recent = preds.filter(p => p.outcome === "win" || p.outcome === "loss").slice(0, 12);
   if (!recent.length) return null;
   const items = [...recent, ...recent];
   return (
@@ -921,6 +921,7 @@ export default function Dashboard() {
         if (["result_tracked","result_update"].includes(msg.event)) {
           loadHistory();
         }
+        // Kalau skip, picks langsung hilang — load() sudah handle ini di atas
         if (msg.event === "parlay_ready") setParlay(msg.data);
       };
     };
@@ -960,7 +961,7 @@ export default function Dashboard() {
 
   const o   = stats?.overall;
   const fmt = (n) => n?.toFixed(1) ?? "—";
-  const resolved = preds.filter(p => p.outcome);
+  const resolved = preds.filter(p => p.outcome === "win" || p.outcome === "loss");
   const wins     = resolved.filter(p => p.outcome === "win").length;
   const displayWR = resolved.length > 0 ? Math.round(wins / resolved.length * 1000) / 10 : 0;
 
@@ -1166,7 +1167,7 @@ export default function Dashboard() {
                       <table className="tbl">
                         <thead><tr><th>Match</th><th>Type</th><th>Pick</th><th>Conf</th><th>Result</th></tr></thead>
                         <tbody>
-                          {preds.slice(0, 6).map(p => (
+                          {preds.filter(p => p.outcome !== "skip").slice(0, 6).map(p => (
                             <tr key={p.id}>
                               <td>
                                 <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>{p.match_name}</div>
@@ -1212,7 +1213,7 @@ export default function Dashboard() {
               <span className="badge bp">{o?.pending ?? 0} pending</span>
             </div>
             <InfoBanner preds={preds} />
-            {preds.length === 0
+            {preds.filter(p => p.outcome !== "skip").length === 0
               ? <EmptyState icon="🔮" title="Database kosong" desc={"Predictions disimpan via db.save_prediction()\nbukan lewat WebSocket push"} />
               : <div className="scroll-x">
                   <table className="tbl">
@@ -1220,7 +1221,7 @@ export default function Dashboard() {
                       <tr><th>Match</th><th>Type</th><th>Pick</th><th>Conf</th><th>Parlay</th><th>Result</th><th>Score</th></tr>
                     </thead>
                     <tbody>
-                      {preds.map(p => (
+                      {preds.filter(p => p.outcome !== "skip").map(p => (
                         <tr key={p.id}>
                           <td>
                             <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>{p.match_name}</div>
