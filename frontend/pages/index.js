@@ -347,7 +347,7 @@ const AIFlowDiagram = () => {
   const [active, setActive] = useState(null);
 
   const nodes = {
-    api:      { label: "TheSportsDB API", sub: "PL · PD · SA · BL1 · FL1 · UCL · UEL · ELC · PPL · DED · BSA · MLS", color: T.sub,    glow: "#3A4A63" },
+    api:      { label: "TheSportsDB API", sub: "PL · PD · SA · BL1 · FL1 · UCL · UEL · ELC · PPL · DED · ALG · BSA · MLS", color: T.sub,    glow: "#3A4A63" },
     prep:     { label: "Preprocessing & Cache", sub: "Rate-limit · 15 min cache · TTL guard", color: T.cyan,   glow: "#00D4F0" },
     stat:     { label: "Agent Statistik", sub: "Form & historis tim",       color: T.purple, glow: "#A97FF5" },
     odds:     { label: "Agent Odds",     sub: "Value bet evaluation",       color: T.purple, glow: "#A97FF5" },
@@ -558,7 +558,7 @@ const AIFlowDiagram = () => {
 
       {/* League pills */}
       <div style={{ padding: "10px 16px 16px", display: "flex", flexWrap: "wrap", gap: 6 }}>
-        {["PL","PD","SA","BL1","FL1","UCL","UEL","ELC","PPL","DED","BSA","MLS"].map(c => (
+        {["PL","PD","SA","BL1","FL1","UCL","UEL","ELC","PPL","DED","ALG","BSA","MLS"].map(c => (
           <span key={c} style={{
             fontFamily:"'JetBrains Mono',monospace", fontSize: 9, fontWeight: 700,
             padding: "3px 9px", borderRadius: 6, letterSpacing: ".8px",
@@ -828,7 +828,7 @@ export default function Dashboard() {
 
     // ── FALLBACK: build popup dari prediksi pending + semua jadwal ──
     // Ambil jadwal dari semua liga yang disupport
-    const comps = ["PL","PD","SA","BL1","FL1","UCL","UEL","ELC","PPL","DED","BSA","MLS"];
+    const comps = ["PL","PD","SA","BL1","FL1","UCL","UEL","ELC","PPL","DED","ALG","BSA","MLS"];
     const allMatches = [];
     await Promise.all(comps.map(async c => {
       try {
@@ -1278,7 +1278,7 @@ export default function Dashboard() {
                 <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, letterSpacing: "1px" }}>COMPETITION</span>
                 <div style={{ position: "relative" }}>
                   <select className="sel" value={comp} onChange={e => setComp(e.target.value)}>
-                    {["PL","PD","SA","BL1","FL1","UCL","UEL","ELC","PPL","DED","BSA","MLS"].map(c => <option key={c}>{c}</option>)}
+                    {["PL","PD","SA","BL1","FL1","UCL","UEL","ELC","PPL","DED","ALG","BSA","MLS"].map(c => <option key={c}>{c}</option>)}
                   </select>
                 </div>
                 <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, marginLeft: "auto" }}>{schedule.length} matches</span>
@@ -1352,7 +1352,7 @@ export default function Dashboard() {
             {/* Extra info cards */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }} className="stat-grid">
               {[
-                { icon: "🌍", title: "12 Liga Didukung", desc: "PL · PD · SA · BL1 · FL1 · UCL · UEL · ELC · PPL · DED · BSA · MLS — semua FREE via TheSportsDB", color: T.accent },
+                { icon: "🌍", title: "12 Liga Didukung", desc: "PL · PD · SA · BL1 · FL1 · UCL · UEL · ELC · PPL · DED · ALG · BSA · MLS — semua FREE via TheSportsDB", color: T.accent },
                 { icon: "🤖", title: "Multi-Agent Debate", desc: "3 AI agents berdebat setiap prediksi — statistik, odds value, dan konteks situasional", color: T.purple },
                 { icon: "📈", title: "Self-Learning", desc: "Sistem belajar dari hasil aktual dan otomatis update bobot agent untuk akurasi yang terus meningkat", color: T.win },
               ].map((c, i) => (
