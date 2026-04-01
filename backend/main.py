@@ -56,7 +56,6 @@ LEAGUE_CODE_TO_ID = {
     "ELC": "4329",   # English Championship (2nd div)
     "PPL": "4344",   # Primeira Liga (Portugal)
     "DED": "4337",   # Eredivisie (Netherlands)
-    "ALG": "4356",
     # ── Americas ────────────────────────────────────────────────────────────────
     "BSA": "4351",   # Brasileirão Série A
     "MLS": "4346",   # Major League Soccer (USA)
@@ -73,7 +72,6 @@ COMPETITION_NAMES = {
     "ELC": "Championship",
     "PPL": "Primeira Liga",
     "DED": "Eredivisie",
-    "ALG": "A-League",
     "BSA": "Brasileirão",
     "MLS": "MLS",
 }
@@ -191,7 +189,7 @@ def _register_team_from_event(e: dict):
                 logger.debug(f"📌 Team registered from schedule: {name} → {tid}")
 
 
-async def get_upcoming_matches(competition_code: str = "PL", days: int = 60) -> list:
+async def get_upcoming_matches(competition_code: str = "PL", days: int = 7) -> list:
     """
     Ambil fixtures mendatang untuk satu liga.
     Endpoint: eventsnextleague.php?id=<league_id>
@@ -200,8 +198,6 @@ async def get_upcoming_matches(competition_code: str = "PL", days: int = 60) -> 
 
     FIX: Setiap tim di response langsung didaftarkan ke _team_name_to_id
          via _register_team_from_event() agar bisa di-track.
-    FIX2: Default days diperluas ke 60, dan SEMUA event dari API dimasukkan
-          (tidak hanya yang dalam 7 hari) supaya user bisa lihat jadwal lebih banyak.
     """
     import time
     league_id = LEAGUE_CODE_TO_ID.get(competition_code)
@@ -237,14 +233,11 @@ async def get_upcoming_matches(competition_code: str = "PL", days: int = 60) -> 
                     ko = ko.replace(tzinfo=timezone.utc)
             except Exception:
                 continue
-            # Masukkan semua event yang belum melewati cutoff (default 60 hari)
-            # Event yang sudah lewat (past) juga tetap disertakan agar tidak kosong
             if ko > cutoff:
                 continue
             result.append({
                 "id":          e.get("idEvent"),
                 "competition": e.get("strLeague", competition_code),
-                "comp_code":   competition_code,
                 "home":        e.get("strHomeTeam", ""),
                 "away":        e.get("strAwayTeam", ""),
                 "kickoff":     ko.isoformat(),
@@ -629,24 +622,6 @@ async def get_report():
 @app.get("/api/schedule")
 async def get_schedule(competition: str = "PL"):
     import time
-    # ── Mode ALL: gabungkan jadwal dari semua liga secara paralel ──────────────
-    if competition.upper() == "ALL":
-        tasks = [get_upcoming_matches(code) for code in SUPPORTED_COMPETITIONS]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        all_matches = []
-        for r in results:
-            if isinstance(r, list):
-                all_matches.extend(r)
-        # Sort by kickoff ascending
-        all_matches.sort(key=lambda m: m.get("kickoff", ""))
-        return {
-            "matches": all_matches,
-            "competition": "ALL",
-            "cache_age_sec": None,
-            "from_cache": False,
-            "total": len(all_matches),
-        }
-
     cached = _schedule_cache.get(competition)
     cache_age = round(time.time() - cached[1]) if cached else None
     matches = await get_upcoming_matches(competition)
@@ -655,7 +630,6 @@ async def get_schedule(competition: str = "PL"):
         "competition": competition,
         "cache_age_sec": cache_age,
         "from_cache": cached is not None and cache_age is not None and cache_age < SCHEDULE_CACHE_TTL,
-        "total": len(matches),
     }
 
 
