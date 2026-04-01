@@ -239,10 +239,11 @@ const StatCard = ({ value, label, color, icon, sub }) => (
 const LogCard = ({ log }) => {
   const time = new Date(log.ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const ev = {
-    new_prediction: { label: "NEW PICK",    color: T.accent, cn: "log-pred" },
-    result_tracked: { label: "RESULT",      color: T.win,    cn: "log-res"  },
-    parlay_ready:   { label: "PARLAY READY",color: T.pend,   cn: "log-parl" },
-    error:          { label: "ERROR",       color: T.loss,   cn: "log-err"  },
+    new_prediction: { label: "NEW PICK",      color: T.accent, cn: "log-pred" },
+    result_tracked: { label: "RESULT",        color: T.win,    cn: "log-res"  },
+    result_update:  { label: "MANUAL RESULT", color: T.win,    cn: "log-res"  },
+    parlay_ready:   { label: "PARLAY READY",  color: T.pend,   cn: "log-parl" },
+    error:          { label: "ERROR",         color: T.loss,   cn: "log-err"  },
   }[log.event] || { label: log.event.replace(/_/g," ").toUpperCase(), color: T.sub, cn: "log-def" };
   return (
     <div className={`log ${ev.cn}`}>
@@ -783,8 +784,10 @@ let _popupMountedAt = Date.now() / 1000;
 export default function Dashboard() {
   const [stats,    setStats]    = useState(null);
   const [preds,    setPreds]    = useState([]);
+  const [history,  setHistory]  = useState([]);
+  const [historyTotal, setHistoryTotal] = useState(0);
   const [logs,     setLogs]     = useState([]);
-  const [tab,      setTab]      = useState("overview");  // overview | predictions | schedule | feed | parlay
+  const [tab,      setTab]      = useState("overview");
   const [schedule, setSchedule] = useState([]);
   const [comp,     setComp]     = useState("PL");
   const [loading,  setLoading]  = useState(true);
@@ -793,9 +796,9 @@ export default function Dashboard() {
   const [upcomingPreds, setUpcomingPreds] = useState([]);
   const [popupIdx,      setPopupIdx]      = useState(0);
   const [popupVisible,  setPopupVisible]  = useState(false);
-  const [popupDismissed, setPopupDismissed] = useState(false);  // user manually close
+  const [popupDismissed, setPopupDismissed] = useState(false);
   const logsRef  = useRef(null);
-  const predsRef = useRef([]);  // always-fresh copy for async callbacks
+  const predsRef = useRef([]);
 
   const load = useCallback(async () => {
     try {
@@ -806,6 +809,18 @@ export default function Dashboard() {
       setStats(s); setPreds(p); predsRef.current = p;
     } catch {}
     setLoading(false);
+  }, []);
+
+  const loadHistory = useCallback(async () => {
+    try {
+      const d = await fetch(`${API}/api/history?limit=100`).then(r => r.json());
+      if (d && Array.isArray(d.items)) {
+        setHistory(d.items);
+        setHistoryTotal(d.total ?? d.items.length);
+      }
+    } catch (e) {
+      console.warn("loadHistory error:", e);
+    }
   }, []);
 
   const loadUpcoming = useCallback(async () => {
@@ -890,6 +905,7 @@ export default function Dashboard() {
   useEffect(() => {
     // load preds dulu, baru loadUpcoming (supaya predsRef terisi)
     load().then(() => loadUpcoming());
+    loadHistory();
     let ws, timer;
     const connect = () => {
       ws = new WebSocket(WS);
@@ -899,8 +915,11 @@ export default function Dashboard() {
       ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
         setLogs(prev => [msg, ...prev].slice(0, 150));
-        if (["new_prediction","result_tracked","parlay_ready"].includes(msg.event)) {
+        if (["new_prediction","result_tracked","parlay_ready","result_update"].includes(msg.event)) {
           load().then(() => loadUpcoming());
+        }
+        if (["result_tracked","result_update"].includes(msg.event)) {
+          loadHistory();
         }
         if (msg.event === "parlay_ready") setParlay(msg.data);
       };
@@ -973,6 +992,7 @@ export default function Dashboard() {
   const navItems = [
     { key: "overview",     icon: "📊", label: "Overview"    },
     { key: "predictions",  icon: "🔮", label: "Picks"       },
+    { key: "history",      icon: "📜", label: "History"     },
     { key: "schedule",     icon: "📅", label: "Schedule"    },
     { key: "feed",         icon: "📡", label: "Live"        },
     { key: "parlay",       icon: "🏆", label: "Parlay"      },
@@ -1233,6 +1253,147 @@ export default function Dashboard() {
           </div>
         )}
 
+        {/* ════════ HISTORY ════════ */}
+        {tab === "history" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {/* Stats summary strip */}
+            {history.length > 0 && (() => {
+              const wins   = history.filter(h => h.outcome === "win").length;
+              const losses = history.filter(h => h.outcome === "loss").length;
+              const wr     = history.length > 0 ? Math.round(wins / history.length * 1000) / 10 : 0;
+              // streak
+              let streak = 0, streakType = null;
+              for (const h of history) {
+                if (!streakType) streakType = h.outcome;
+                if (h.outcome === streakType) streak++;
+                else break;
+              }
+              return (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10 }} className="stat-grid">
+                  <StatCard value={history.length} label="Total Resolved" icon="📜" color={T.sub} />
+                  <StatCard value={wins}           label="Wins"           icon="✅" color={T.win} />
+                  <StatCard value={losses}         label="Losses"         icon="❌" color={T.loss} />
+                  <StatCard
+                    value={`${wr}%`}
+                    label="Win Rate"
+                    icon="🎯"
+                    color={wr >= 55 ? T.win : wr >= 45 ? T.pend : T.loss}
+                    sub={streakType ? `${streak}x ${streakType.toUpperCase()} streak` : undefined}
+                  />
+                </div>
+              );
+            })()}
+
+            {/* History table */}
+            <div className="glass" style={{ overflow: "hidden" }}>
+              <div style={{ padding: "14px 18px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 11, fontWeight: 700, color: T.sub, letterSpacing: "1px" }}>📜 HISTORY</span>
+                <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted }}>semua prediksi yang sudah ada hasil</span>
+                <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, marginLeft: "auto" }}>
+                  {history.length} / {historyTotal} records
+                </span>
+              </div>
+
+              {history.length === 0 ? (
+                <div style={{ padding: "48px 0", textAlign: "center" }}>
+                  <div style={{ fontSize: 36, marginBottom: 12 }}>📜</div>
+                  <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 12, color: T.sub, marginBottom: 6 }}>
+                    Belum ada history
+                  </div>
+                  <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted }}>
+                    Input hasil via Telegram: /hasil [nama tim] win/lose
+                  </div>
+                </div>
+              ) : (
+                <div className="scroll-x">
+                  <table className="tbl">
+                    <thead>
+                      <tr>
+                        <th>Match</th>
+                        <th>Type</th>
+                        <th>AI Pick</th>
+                        <th>Conf</th>
+                        <th>Result</th>
+                        <th>Notes</th>
+                        <th>Date</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {history.map((h, i) => {
+                        const isWin     = h.outcome === "win";
+                        const rowBorder = isWin
+                          ? "rgba(0,224,154,.06)"
+                          : "rgba(255,64,96,.04)";
+                        const isManual  = (h.notes || "").toLowerCase().includes("manual");
+                        return (
+                          <tr key={h.id ?? i} style={{ background: rowBorder }}>
+                            <td>
+                              <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6 }}>
+                                {h.match_name}
+                                {isManual && (
+                                  <span style={{
+                                    fontFamily:"'JetBrains Mono',monospace", fontSize: 8,
+                                    color: T.purple, background: "rgba(169,127,245,.12)",
+                                    border: "1px solid rgba(169,127,245,.25)",
+                                    borderRadius: 5, padding: "1px 5px", letterSpacing: ".5px",
+                                  }}>MANUAL</span>
+                                )}
+                              </div>
+                              <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 9, color: T.muted, marginTop: 2 }}>
+                                #{h.id}
+                              </div>
+                            </td>
+                            <td>
+                              <span className={`badge ${h.bet_type==="1X2"?"b1":h.bet_type==="OU"?"bo":"ba"}`}>
+                                {h.bet_type}
+                              </span>
+                            </td>
+                            <td style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 11, maxWidth: 160, color: T.text }}>
+                              {h.predicted_pick}
+                            </td>
+                            <td><ConfBar val={h.confidence} /></td>
+                            <td>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                <span className={`badge ${isWin ? "bw" : "bl"}`}>
+                                  {isWin ? "✓ WIN" : "✗ LOSS"}
+                                </span>
+                              </div>
+                            </td>
+                            <td style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, maxWidth: 180 }}>
+                              {h.score || h.actual_result || "—"}
+                            </td>
+                            <td style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, whiteSpace: "nowrap" }}>
+                              {h.recorded_at
+                                ? new Date(h.recorded_at).toLocaleDateString("id-ID", { day:"2-digit", month:"short", year:"numeric" })
+                                : "—"
+                              }
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Tip box */}
+            <div style={{
+              background: "rgba(79,142,255,.05)", border: "1px solid rgba(79,142,255,.15)",
+              borderRadius: 14, padding: "14px 18px",
+              fontFamily:"'JetBrains Mono',monospace", fontSize: 11, color: T.sub, lineHeight: 1.7,
+            }}>
+              💡 <strong style={{ color: T.accent }}>Cara input hasil manual via Telegram:</strong>
+              <br />
+              1. Ketik <code style={{ color: T.win }}>/list</code> → lihat semua picks pending
+              <br />
+              2. Ketik <code style={{ color: T.win }}>/hasil [nama tim] win</code> atau <code style={{ color: T.win }}>/hasil [nama tim] lose</code>
+              <br />
+              3. Web ini akan auto-update setelah kamu submit · prediksi masuk ke halaman History ini
+            </div>
+          </div>
+        )}
+
         {/* ════════ SCHEDULE ════════ */}
         {tab === "schedule" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -1386,7 +1547,13 @@ export default function Dashboard() {
 
       {/* ── BOTTOM NAV (mobile only) ── */}
       <nav className="bottom-nav">
-        {navItems.map(n => (
+        {[
+          { key: "overview",    icon: "📊", label: "Overview" },
+          { key: "predictions", icon: "🔮", label: "Picks"    },
+          { key: "history",     icon: "📜", label: "History"  },
+          { key: "schedule",    icon: "📅", label: "Schedule" },
+          { key: "parlay",      icon: "🏆", label: "Parlay"   },
+        ].map(n => (
           <button key={n.key} className={`bnav-item ${tab === n.key ? "bnav-active" : "bnav-off"}`}
             onClick={() => setTab(n.key)}
             style={{ background: "none", border: "none", outline: "none" }}>
