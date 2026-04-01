@@ -786,7 +786,7 @@ export default function Dashboard() {
   const [logs,     setLogs]     = useState([]);
   const [tab,      setTab]      = useState("overview");  // overview | predictions | schedule | feed | parlay
   const [schedule, setSchedule] = useState([]);
-  const [comp,     setComp]     = useState("PL");
+  const [comp,     setComp]     = useState("ALL");
   const [loading,  setLoading]  = useState(true);
   const [wsOk,     setWsOk]     = useState(false);
   const [parlay,   setParlay]   = useState(null);
@@ -878,7 +878,10 @@ export default function Dashboard() {
 
   const loadSched = useCallback(async (c) => {
     try {
-      const r = await fetch(`${API}/api/schedule?competition=${c}`);
+      const url = c === "ALL"
+        ? `${API}/api/schedule/all`
+        : `${API}/api/schedule?competition=${c}&days=14`;
+      const r = await fetch(url);
       if (!r.ok) { console.warn("schedule fetch failed:", r.status); return; }
       const d = await r.json();
       setSchedule(d.matches || []);
@@ -1278,10 +1281,13 @@ export default function Dashboard() {
                 <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, letterSpacing: "1px" }}>COMPETITION</span>
                 <div style={{ position: "relative" }}>
                   <select className="sel" value={comp} onChange={e => setComp(e.target.value)}>
-                    {["PL","PD","SA","BL1","FL1","UCL","UEL","ELC","PPL","DED","ALG","BSA","MLS"].map(c => <option key={c}>{c}</option>)}
+                    <option value="ALL">⚡ ALL COMPETITIONS</option>
+                    {["PL","PD","SA","BL1","FL1","UCL","UEL","ELC","PPL","DED","ALG","BSA","MLS"].map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </div>
-                <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, marginLeft: "auto" }}>{schedule.length} matches</span>
+                <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, marginLeft: "auto" }}>
+                  {comp === "ALL" ? `${schedule.length} matches · all leagues` : `${schedule.length} matches`}
+                </span>
               </div>
               {schedule.length === 0
                 ? <EmptyState icon="📅" title="Tidak ada jadwal" desc="Pilih kompetisi lain atau cek API key" />
