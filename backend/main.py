@@ -178,15 +178,30 @@ def _find_team_id(team_name: str) -> Optional[int]:
     return None
 
 
+# ── Next match cache: team_id → match dict, TTL 30 menit ──────────────────
+_next_match_cache: dict[int, tuple[dict | None, float]] = {}  # id → (match, timestamp)
+NEXT_MATCH_CACHE_TTL = 1800  # 30 menit
+
+
 async def get_next_match_for_team(team_id: int) -> Optional[dict]:
-    """Ambil 1 pertandingan terdekat (SCHEDULED) untuk team_id tertentu."""
+    """Ambil 1 pertandingan terdekat (SCHEDULED) untuk team_id tertentu.
+    Hasil di-cache 30 menit supaya endpoint upcoming-predictions cepat.
+    """
+    import time
+    now = time.time()
+    if team_id in _next_match_cache:
+        cached_match, cached_at = _next_match_cache[team_id]
+        if now - cached_at < NEXT_MATCH_CACHE_TTL:
+            return cached_match
+
     try:
-        data = await fetch_football_data(f"/v4/teams/{team_id}/matches?status=SCHEDULED&limit=5")
+        data = await fetch_football_data(f"/teams/{team_id}/matches?status=SCHEDULED&limit=5")
         matches = data.get("matches", [])
         if not matches:
+            _next_match_cache[team_id] = (None, now)
             return None
         m = matches[0]
-        return {
+        result = {
             "id":          m["id"],
             "competition": m["competition"]["name"],
             "home":        m["homeTeam"]["name"],
@@ -194,8 +209,11 @@ async def get_next_match_for_team(team_id: int) -> Optional[dict]:
             "kickoff_utc": m["utcDate"],
             "status":      m["status"],
         }
+        _next_match_cache[team_id] = (result, now)
+        return result
     except Exception as e:
         logger.warning(f"get_next_match_for_team {team_id}: {e}")
+        _next_match_cache[team_id] = (None, now)
         return None
 
 
@@ -427,9 +445,10 @@ async def get_next_match(team_name: str):
 @app.get("/api/upcoming-predictions")
 async def get_upcoming_predictions():
     """
-    Ambil semua prediksi pending + cek next match dari API untuk masing-masing tim.
-    Prediksi tim yang sudah selesai (finished) → tandai untuk dihapus dari tampilan.
-    Prediksi tim yang tidak ada di API → tandai 'unknown', akan auto-hapus setelah 24h.
+    Ambil prediksi pending + next match info per tim.
+    - Tim ada di API  → tampilkan next match + countdown WIB
+    - Tim tidak ada   → api_status='unknown', auto-hapus setelah 24h
+    - Team cache kosong → fallback: parse match_name langsung dari jadwal liga
     """
     db = get_db()
     with db._get_conn() as conn:
@@ -444,53 +463,70 @@ async def get_upcoming_predictions():
             LIMIT 30
         """).fetchall()
 
-    result = []
-    for row in rows:
-        d          = dict(row)
-        match_name = d["match_name"]
+    pending = [dict(r) for r in rows]
+    if not pending:
+        return []
 
-        # Cek apakah ada di API
-        in_api = _is_team_in_api(match_name)
+    # ── Kumpulkan semua team ID yang dibutuhkan dulu ─────────────────────────
+    team_id_map: dict[str, int | None] = {}   # match_name → team_id (home)
+    for p in pending:
+        mn = p["match_name"]
+        parts = mn.split(" vs ", 1) if " vs " in mn else [mn]
+        tid = _find_team_id(parts[0].strip())
+        if not tid and len(parts) > 1:
+            tid = _find_team_id(parts[1].strip())
+        team_id_map[mn] = tid
+
+    # ── Fetch next match secara PARALEL untuk semua tim yang ditemukan ───────
+    unique_ids = list({v for v in team_id_map.values() if v is not None})
+    if unique_ids:
+        tasks = [get_next_match_for_team(tid) for tid in unique_ids]
+        fetched = await asyncio.gather(*tasks, return_exceptions=True)
+        id_to_match: dict[int, dict | None] = {}
+        for tid, res in zip(unique_ids, fetched):
+            id_to_match[tid] = res if isinstance(res, dict) else None
+    else:
+        id_to_match = {}
+
+    # ── Susun hasil ──────────────────────────────────────────────────────────
+    now_utc = datetime.now(timezone.utc)
+    result  = []
+    for p in pending:
+        mn     = p["match_name"]
+        tid    = team_id_map.get(mn)
+        in_api = tid is not None
 
         if not in_api:
-            # Tandai sebagai unknown, mulai timer 24 jam kalau belum ada
-            if match_name not in _unknown_team_predictions:
-                _unknown_team_predictions[match_name] = datetime.now(timezone.utc)
-            ts      = _unknown_team_predictions[match_name]
-            age_hrs = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
-            d["api_status"]      = "unknown"
-            d["unknown_age_hrs"] = round(age_hrs, 1)
-            d["will_expire_hrs"] = round(UNKNOWN_TEAM_TTL_HOURS - age_hrs, 1)
-            d["next_match"]      = None
-            result.append(d)
+            if mn not in _unknown_team_predictions:
+                _unknown_team_predictions[mn] = now_utc
+            ts      = _unknown_team_predictions[mn]
+            age_hrs = (now_utc - ts).total_seconds() / 3600
+            p["api_status"]      = "unknown"
+            p["unknown_age_hrs"] = round(age_hrs, 1)
+            p["will_expire_hrs"] = round(UNKNOWN_TEAM_TTL_HOURS - age_hrs, 1)
+            p["next_match"]      = None
+            result.append(p)
             continue
 
-        # Cari team ID → next match
-        parts   = match_name.split(" vs ", 1) if " vs " in match_name else [match_name]
-        team_id = _find_team_id(parts[0].strip())
-        if not team_id and len(parts) > 1:
-            team_id = _find_team_id(parts[1].strip())
-
-        next_m = None
-        if team_id:
-            next_m = await get_next_match_for_team(team_id)
-
+        next_m = id_to_match.get(tid)
         if next_m:
             kickoff_utc  = datetime.fromisoformat(next_m["kickoff_utc"].replace("Z", "+00:00"))
-            now_utc      = datetime.now(timezone.utc)
             delta        = kickoff_utc - now_utc
             seconds_left = max(int(delta.total_seconds()), 0)
             kickoff_wib  = kickoff_utc + timedelta(hours=7)
-            next_m["kickoff_wib"]    = kickoff_wib.strftime("%Y-%m-%dT%H:%M:%S+07:00")
-            next_m["time_left_sec"]  = seconds_left
-            hours_left               = seconds_left // 3600
-            mins_left                = (seconds_left % 3600) // 60
-            next_m["time_left_str"]  = f"{hours_left}h {mins_left}m" if hours_left > 0 else f"{mins_left}m"
-            next_m["already_started"] = seconds_left == 0
+            h   = seconds_left // 3600
+            min = (seconds_left % 3600) // 60
+            next_m = {
+                **next_m,
+                "kickoff_wib":     kickoff_wib.strftime("%Y-%m-%dT%H:%M:%S+07:00"),
+                "time_left_sec":   seconds_left,
+                "time_left_str":   f"{h}h {min}m" if h > 0 else f"{min}m",
+                "already_started": seconds_left == 0,
+            }
 
-        d["api_status"] = "found"
-        d["next_match"] = next_m
-        result.append(d)
+        p["api_status"] = "found"
+        p["next_match"] = next_m
+        result.append(p)
 
     return result
 
