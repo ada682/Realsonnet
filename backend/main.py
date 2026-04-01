@@ -282,7 +282,46 @@ class PredictionPush(BaseModel):
 
 @app.post("/api/push-prediction")
 async def push_prediction(data: PredictionPush):
-    """Bot memanggil endpoint ini setelah tiap match selesai dianalisa."""
+    """Bot memanggil endpoint ini setelah tiap match selesai dianalisa.
+    
+    PENTING: Endpoint ini juga menyimpan ke database agar data tidak hilang
+    saat web di-refresh. (agents.py sudah save sendiri, tapi kalau bot jalan
+    di mesin berbeda dari backend, DB-nya berbeda — endpoint ini adalah
+    satu-satunya sumber kebenaran untuk web.)
+    """
+    # ── Simpan ke database supaya /api/predictions tetap ada setelah refresh ──
+    try:
+        from database import PredictionRecord
+        db = get_db()
+
+        # Hindari duplikat: cek apakah match ini sudah ada dalam 5 menit terakhir
+        with db._get_conn() as conn:
+            existing = conn.execute(
+                """SELECT id FROM predictions
+                   WHERE match_name = ? AND bet_type = ?
+                   AND datetime(created_at) >= datetime('now', '-5 minutes')""",
+                (data.match, data.bet_type),
+            ).fetchone()
+
+        if not existing:
+            record = PredictionRecord(
+                match_name=data.match,
+                bet_type=data.bet_type,
+                predicted_pick=data.pick,
+                confidence=data.confidence,
+                debate_summary=data.summary,
+                agents_data={"agents": data.agents},
+                consensus_votes="",
+                include_in_parlay=data.include,
+            )
+            pred_id = db.save_prediction(record)
+            logger.info(f"💾 push-prediction saved to DB: #{pred_id} {data.match}")
+        else:
+            logger.info(f"⏭️  push-prediction skip duplicate: {data.match}")
+    except Exception as e:
+        logger.error(f"push-prediction DB save error: {e}")
+
+    # ── Broadcast ke semua WebSocket client ──
     await broadcast_log("new_prediction", data.dict())
     return {"ok": True}
 
