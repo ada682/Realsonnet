@@ -1258,19 +1258,21 @@ export default function Dashboard() {
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             {/* Stats summary strip */}
             {history.length > 0 && (() => {
+              const resolved = history.filter(h => h.outcome === "win" || h.outcome === "loss");
               const wins   = history.filter(h => h.outcome === "win").length;
               const losses = history.filter(h => h.outcome === "loss").length;
-              const wr     = history.length > 0 ? Math.round(wins / history.length * 1000) / 10 : 0;
-              // streak
+              const skips  = history.filter(h => h.outcome === "skip").length;
+              const wr     = resolved.length > 0 ? Math.round(wins / resolved.length * 1000) / 10 : 0;
+              // streak (skip tidak putus streak)
               let streak = 0, streakType = null;
-              for (const h of history) {
+              for (const h of history.filter(x => x.outcome !== "skip")) {
                 if (!streakType) streakType = h.outcome;
                 if (h.outcome === streakType) streak++;
                 else break;
               }
               return (
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10 }} className="stat-grid">
-                  <StatCard value={history.length} label="Total Resolved" icon="📜" color={T.sub} />
+                  <StatCard value={resolved.length} label="Win/Loss Resolved" icon="📜" color={T.sub} sub={skips > 0 ? `+${skips} skipped` : undefined} />
                   <StatCard value={wins}           label="Wins"           icon="✅" color={T.win} />
                   <StatCard value={losses}         label="Losses"         icon="❌" color={T.loss} />
                   <StatCard
@@ -1321,16 +1323,19 @@ export default function Dashboard() {
                     <tbody>
                       {history.map((h, i) => {
                         const isWin     = h.outcome === "win";
-                        const rowBorder = isWin
-                          ? "rgba(0,224,154,.06)"
-                          : "rgba(255,64,96,.04)";
-                        const isManual  = (h.notes || "").toLowerCase().includes("manual");
+                        const isSkip    = h.outcome === "skip";
+                        const rowBorder = isSkip
+                          ? "rgba(58,74,99,.08)"
+                          : isWin
+                            ? "rgba(0,224,154,.06)"
+                            : "rgba(255,64,96,.04)";
+                        const isManual  = (h.notes || "").toLowerCase().includes("manual") || (h.notes || "").toLowerCase().includes("skip");
                         return (
-                          <tr key={h.id ?? i} style={{ background: rowBorder }}>
+                          <tr key={h.id ?? i} style={{ background: rowBorder, opacity: isSkip ? 0.6 : 1 }}>
                             <td>
                               <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6 }}>
                                 {h.match_name}
-                                {isManual && (
+                                {isManual && !isSkip && (
                                   <span style={{
                                     fontFamily:"'JetBrains Mono',monospace", fontSize: 8,
                                     color: T.purple, background: "rgba(169,127,245,.12)",
@@ -1348,19 +1353,21 @@ export default function Dashboard() {
                                 {h.bet_type}
                               </span>
                             </td>
-                            <td style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 11, maxWidth: 160, color: T.text }}>
+                            <td style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 11, maxWidth: 160, color: isSkip ? T.muted : T.text }}>
                               {h.predicted_pick}
                             </td>
                             <td><ConfBar val={h.confidence} /></td>
                             <td>
-                              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              {isSkip ? (
+                                <span className="badge bs">🗑 SKIP</span>
+                              ) : (
                                 <span className={`badge ${isWin ? "bw" : "bl"}`}>
                                   {isWin ? "✓ WIN" : "✗ LOSS"}
                                 </span>
-                              </div>
+                              )}
                             </td>
                             <td style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, maxWidth: 180 }}>
-                              {h.score || h.actual_result || "—"}
+                              {isSkip ? "—" : (h.score || h.actual_result || "—")}
                             </td>
                             <td style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, whiteSpace: "nowrap" }}>
                               {h.recorded_at
