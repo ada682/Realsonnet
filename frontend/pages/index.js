@@ -595,7 +595,7 @@ export default function Dashboard() {
 
     // ── FALLBACK: build popup dari prediksi pending + semua jadwal ──
     // Ambil jadwal dari semua liga yang disupport
-    const comps = ["PL","CL","PD","SA","BL1","FL1"];
+    const comps = ["PL","PD","SA","BL1","FL1"];
     const allMatches = [];
     await Promise.all(comps.map(async c => {
       try {
@@ -1044,7 +1044,7 @@ export default function Dashboard() {
                 <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, letterSpacing: "1px" }}>COMPETITION</span>
                 <div style={{ position: "relative" }}>
                   <select className="sel" value={comp} onChange={e => setComp(e.target.value)}>
-                    {["PL","CL","PD","SA","BL1","FL1","ELC","PPL","DED"].map(c => <option key={c}>{c}</option>)}
+                    {["PL", "PD", "SA", "BL1", "FL1"].map(c => <option key={c}>{c}</option>)}
                   </select>
                 </div>
                 <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 10, color: T.muted, marginLeft: "auto" }}>{schedule.length} matches</span>
