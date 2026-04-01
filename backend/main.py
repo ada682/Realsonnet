@@ -191,7 +191,7 @@ def _register_team_from_event(e: dict):
                 logger.debug(f"📌 Team registered from schedule: {name} → {tid}")
 
 
-async def get_upcoming_matches(competition_code: str = "PL", days: int = 7) -> list:
+async def get_upcoming_matches(competition_code: str = "PL", days: int = 14) -> list:
     """
     Ambil fixtures mendatang untuk satu liga.
     Endpoint: eventsnextleague.php?id=<league_id>
@@ -622,16 +622,36 @@ async def get_report():
 
 
 @app.get("/api/schedule")
-async def get_schedule(competition: str = "PL"):
+async def get_schedule(competition: str = "PL", days: int = 14):
     import time
     cached = _schedule_cache.get(competition)
     cache_age = round(time.time() - cached[1]) if cached else None
-    matches = await get_upcoming_matches(competition)
+    matches = await get_upcoming_matches(competition, days=days)
     return {
         "matches": matches,
         "competition": competition,
         "cache_age_sec": cache_age,
         "from_cache": cached is not None and cache_age is not None and cache_age < SCHEDULE_CACHE_TTL,
+    }
+
+
+@app.get("/api/schedule/all")
+async def get_schedule_all(days: int = 14):
+    """
+    Ambil jadwal dari SEMUA kompetisi yang didukung sekaligus, digabung dan diurutkan by kickoff.
+    Berguna untuk tampilan All Competitions di frontend.
+    """
+    tasks = [get_upcoming_matches(code, days=days) for code in SUPPORTED_COMPETITIONS]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    all_matches = []
+    for matches in results:
+        if isinstance(matches, list):
+            all_matches.extend(matches)
+    all_matches.sort(key=lambda m: m.get("kickoff", ""))
+    return {
+        "matches": all_matches,
+        "competition": "ALL",
+        "total": len(all_matches),
     }
 
 
