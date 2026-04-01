@@ -6,8 +6,9 @@ import {
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell
 } from "recharts";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "";
-const WS  = process.env.NEXT_PUBLIC_WS_URL  || "";
+// ── FIX 1: Hardcoded fallback URL supaya tidak pernah kosong ──────────────────
+const API = process.env.NEXT_PUBLIC_API_URL || "https://caring-contentment-production.up.railway.app";
+const WS  = process.env.NEXT_PUBLIC_WS_URL  || "wss://caring-contentment-production.up.railway.app/ws/live";
 
 const C = {
   bg:       "#060810",
@@ -85,7 +86,6 @@ body{background:${C.bg};color:${C.text};font-family:'Space Grotesk',sans-serif;-
 .recharts-tooltip-wrapper{pointer-events:none!important}
 `;
 
-// ── FIXED Custom Tooltip — no more white box ──────────────────────────────────
 const CTip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null;
   return (
@@ -109,7 +109,6 @@ const CTip = ({ active, payload, label }) => {
   );
 };
 
-// ── Confidence bar ─────────────────────────────────────────────────────────────
 const ConfBar = ({ val }) => {
   const filled = Math.min(Math.round(val / 20), 5);
   const clr = val >= 80 ? C.win : val >= 60 ? C.blue : val >= 40 ? C.pend : C.loss;
@@ -127,7 +126,6 @@ const ConfBar = ({ val }) => {
   );
 };
 
-// ── Stat Card ──────────────────────────────────────────────────────────────────
 const StatCard = ({ value, label, color, icon }) => (
   <div className="card stat-card card-inner">
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -146,7 +144,6 @@ const StatCard = ({ value, label, color, icon }) => (
   </div>
 );
 
-// ── Log Card ───────────────────────────────────────────────────────────────────
 const LogCard = ({ log }) => {
   const time = new Date(log.ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const ev = {
@@ -188,7 +185,6 @@ const LogCard = ({ log }) => {
   );
 };
 
-// ── Parlay Panel ───────────────────────────────────────────────────────────────
 const ParlayPanel = ({ p }) => {
   if (!p) return (
     <div style={{ padding: "28px 0", textAlign: "center" }}>
@@ -232,7 +228,6 @@ const ParlayPanel = ({ p }) => {
   );
 };
 
-// ── Ticker ─────────────────────────────────────────────────────────────────────
 const Ticker = ({ preds }) => {
   const recent = preds.filter(p => p.outcome).slice(0, 12);
   if (!recent.length) return null;
@@ -293,10 +288,11 @@ export default function Dashboard() {
       ws.onopen  = () => setWsOk(true);
       ws.onclose = () => { setWsOk(false); timer = setTimeout(connect, 3000); };
       ws.onerror = () => ws.close();
+      // ── FIX 2: tambah "parlay_ready" ke trigger load() ────────────────────
       ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
         setLogs(prev => [msg, ...prev].slice(0, 150));
-        if (["new_prediction","result_tracked"].includes(msg.event)) load();
+        if (["new_prediction", "result_tracked", "parlay_ready"].includes(msg.event)) load();
         if (msg.event === "parlay_ready") setParlay(msg.data);
       };
     };
@@ -443,7 +439,6 @@ export default function Dashboard() {
                     <CartesianGrid strokeDasharray="2 4" stroke={C.dim} vertical={false} />
                     <XAxis dataKey="name" tick={{ fill: C.sub, fontSize: 11, fontFamily: "Space Mono" }} axisLine={false} tickLine={false} />
                     <YAxis domain={[0,100]} tick={{ fill: C.muted, fontSize: 9, fontFamily: "Space Mono" }} axisLine={false} tickLine={false} />
-                    {/* custom content prop = no white box */}
                     <Tooltip content={<CTip />} cursor={{ fill: "rgba(255,255,255,.025)", radius: 6 }} />
                     <Bar dataKey="Win Rate" radius={[7,7,0,0]}>
                       {btData.map((entry, i) => (
@@ -564,7 +559,7 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* RIGHT */}
+          {/* RIGHT COLUMN */}
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             {/* Live feed */}
             <div className="card" style={{ display: "flex", flexDirection: "column", height: 380 }}>
