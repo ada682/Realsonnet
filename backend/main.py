@@ -1,6 +1,8 @@
 # ── backend/main.py ───────────────────────────────────────────────────────────
 # FastAPI Backend for Parlay Prediction System
-# TAMBAHAN: /api/push-parlay endpoint + broadcast parlay final ke WebSocket
+# API Football: TheSportsDB (FREE, no signup — API key = "123")
+# Docs: https://www.thesportsdb.com/documentation
+# Endpoint base: https://www.thesportsdb.com/api/v1/json/123/
 
 import asyncio
 import httpx
@@ -19,20 +21,13 @@ from database import get_db
 from learning_engine import get_learning_engine
 
 try:
-    from config import FOOTBALL_DATA_API_KEY, SECRET_KEY
+    from config import SECRET_KEY
 except ImportError:
-    FOOTBALL_DATA_API_KEY = os.getenv("FOOTBALL_DATA_API_KEY", "")
-    SECRET_KEY            = os.getenv("SECRET_KEY", "changeme")
-
-# API-Football v3 (api-sports.io) — free plan, no CC required
-# Daftar di: https://dashboard.api-football.com
-# Set env var: API_FOOTBALL_KEY=<api_key_kamu>
-# Kalau belum set, fallback ke FOOTBALL_DATA_API_KEY (untuk backward compat)
-API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY", FOOTBALL_DATA_API_KEY)
+    SECRET_KEY = os.getenv("SECRET_KEY", "changeme")
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Parlay Prediction API", version="1.0.0")
+app = FastAPI(title="Parlay Prediction API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,31 +37,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── API-Football v3 (api-sports.io) ──────────────────────────────────────────
-# Base URL baru — berbeda dari football-data.org yang lama
-API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
+# ── TheSportsDB (FREE — tidak perlu daftar, langsung pakai) ──────────────────
+# Docs: https://www.thesportsdb.com/documentation
+# Free key: 123  (bisa diisi key premium kalau punya, tapi 123 sudah cukup)
+TSDB_KEY  = os.getenv("THESPORTSDB_KEY", "123")
+TSDB_BASE = f"https://www.thesportsdb.com/api/v1/json/{TSDB_KEY}"
 
-# Mapping kode liga → league ID di API-Football v3
-# Referensi: https://dashboard.api-football.com → Ids → Leagues
+# Mapping kode liga → League ID di TheSportsDB
+# Cari ID di: https://www.thesportsdb.com/sport/leagues  → pilih liga → lihat URL
+# Contoh: https://www.thesportsdb.com/league/4328  → ID = 4328
 LEAGUE_CODE_TO_ID = {
-    "PL":  39,   # Premier League (England)
-    "PD":  140,  # La Liga (Spain)
-    "SA":  135,  # Serie A (Italy)
-    "BL1": 78,   # Bundesliga (Germany)
-    "FL1": 61,   # Ligue 1 (France)
-    "UCL": 2,    # UEFA Champions League
+    "PL":  "4328",   # English Premier League
+    "PD":  "4335",   # Spanish La Liga
+    "SA":  "4332",   # Italian Serie A
+    "BL1": "4331",   # German Bundesliga
+    "FL1": "4334",   # French Ligue 1
+    "UCL": "4480",   # UEFA Champions League
 }
 SUPPORTED_COMPETITIONS = list(LEAGUE_CODE_TO_ID.keys())
-CURRENT_SEASON = 2025  # season 2025/26 → pakai tahun mulai
 
-# ── Team name → ID cache (diisi saat startup dari API) ─────────────────────
-_team_name_to_id: dict[str, int] = {}      # "Liverpool FC" → 64
-_team_id_to_name: dict[int, str] = {}      # 64 → "Liverpool FC"
-
-# ── Prediksi dari AI untuk tim yang TIDAK ditemukan di football-data API ──
-# Format: { "Manchester City vs Bayern": datetime_added }
+# ── Prediksi dari AI untuk tim yang TIDAK ditemukan di API ────────────────────
 _unknown_team_predictions: dict[str, datetime] = {}
-UNKNOWN_TEAM_TTL_HOURS = 24                # hapus setelah 24 jam
+UNKNOWN_TEAM_TTL_HOURS = 24
+
+# ── Team name → TheSportsDB team ID cache ─────────────────────────────────────
+_team_name_to_id: dict[str, str] = {}   # "Liverpool" → "133602"
+_team_id_to_name: dict[str, str] = {}   # "133602" → "Liverpool"
+
+# ── Next match cache ───────────────────────────────────────────────────────────
+_next_match_cache: dict[str, tuple[dict | None, float]] = {}
+NEXT_MATCH_CACHE_TTL = 1800  # 30 menit
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -103,189 +103,182 @@ async def broadcast_log(event: str, data: dict):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# FOOTBALL DATA API HELPERS
+# THESPORTSDB API HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def fetch_football_data(path: str, params: dict = None) -> dict:
-    """Fetch dari API-Football v3 (api-sports.io).
-    
-    Header: x-apisports-key
-    Base URL: https://v3.football.api-sports.io
-    Docs: https://www.api-football.com/documentation-v3
+async def fetch_tsdb(endpoint: str, params: dict = None) -> dict:
     """
-    headers = {"x-apisports-key": API_FOOTBALL_KEY}
+    Fetch dari TheSportsDB v1 API.
+    Base URL: https://www.thesportsdb.com/api/v1/json/123/
+    Tidak perlu header khusus — key sudah ada di URL.
+    Rate limit: 30 req/menit (free). Cukup untuk bot prediksi.
+    """
+    url = f"{TSDB_BASE}/{endpoint}"
     async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.get(f"{API_FOOTBALL_BASE}{path}", headers=headers, params=params)
+        r = await client.get(url, params=params)
         r.raise_for_status()
-        data = r.json()
-        # API-Football v3 selalu wrap response dalam {"response": [...], "errors": {}}
-        if data.get("errors"):
-            logger.error(f"API-Football error: {data['errors']}")
-        return data
+        return r.json()
 
 
 async def get_upcoming_matches(competition_code: str = "PL", days: int = 7) -> list:
-    """Ambil pertandingan mendatang menggunakan API-Football v3.
-    
-    Endpoint: GET /fixtures
-    Params: league (int), season (int), from (date), to (date)
-    Status NS = Not Started (belum mulai), TBD = waktu belum ditentukan
     """
+    Ambil fixtures mendatang untuk satu liga.
+    Endpoint: eventsnextleague.php?id=<league_id>
+    Free plan: mengembalikan ~15 event berikutnya.
+    """
+    league_id = LEAGUE_CODE_TO_ID.get(competition_code)
+    if not league_id:
+        logger.warning(f"Kode liga tidak dikenal: {competition_code}")
+        return []
     try:
-        league_id = LEAGUE_CODE_TO_ID.get(competition_code)
-        if not league_id:
-            logger.warning(f"Kode liga tidak dikenal: {competition_code}")
-            return []
-        today  = datetime.utcnow().date()
-        future = today + timedelta(days=days)
-        data = await fetch_football_data("/fixtures", params={
-            "league":  league_id,
-            "season":  CURRENT_SEASON,
-            "from":    str(today),
-            "to":      str(future),
-            "status":  "NS-TBD",   # Not Started + TBD
-        })
-        matches = data.get("response", [])[:20]
-        return [
-            {
-                "id":          m["fixture"]["id"],
-                "home_id":     m["teams"]["home"]["id"],
-                "away_id":     m["teams"]["away"]["id"],
-                "competition": m["league"]["name"],
-                "home":        m["teams"]["home"]["name"],
-                "away":        m["teams"]["away"]["name"],
-                "kickoff":     m["fixture"]["date"],
-                "status":      m["fixture"]["status"]["short"],
-            }
-            for m in matches
-        ]
+        data = await fetch_tsdb("eventsnextleague.php", params={"id": league_id})
+        events = data.get("events") or []
+        now = datetime.now(timezone.utc)
+        cutoff = now + timedelta(days=days)
+        result = []
+        for e in events:
+            kickoff_str = e.get("strTimestamp") or e.get("dateEvent")
+            try:
+                if "T" in str(kickoff_str):
+                    ko = datetime.fromisoformat(kickoff_str.replace("Z", "+00:00"))
+                else:
+                    # hanya tanggal, pakai jam dari strTime kalau ada
+                    t = e.get("strTime", "00:00:00") or "00:00:00"
+                    ko = datetime.fromisoformat(f"{kickoff_str}T{t}+00:00")
+            except Exception:
+                continue
+            if ko > cutoff:
+                continue
+            result.append({
+                "id":          e.get("idEvent"),
+                "competition": e.get("strLeague", competition_code),
+                "home":        e.get("strHomeTeam", ""),
+                "away":        e.get("strAwayTeam", ""),
+                "kickoff":     ko.isoformat(),
+                "status":      e.get("strStatus", "NS"),
+                "home_id":     e.get("idHomeTeam"),
+                "away_id":     e.get("idAwayTeam"),
+            })
+        return result
     except Exception as e:
-        logger.error(f"football-data fetch error: {e}")
+        logger.error(f"get_upcoming_matches error ({competition_code}): {e}")
         return []
 
 
 async def get_finished_matches(competition_code: str = "PL") -> list:
-    """Ambil pertandingan selesai 7 hari terakhir menggunakan API-Football v3.
-    
-    Endpoint: GET /fixtures
-    Status FT = Full Time, AET = After Extra Time, PEN = After Penalties
     """
+    Ambil hasil pertandingan terakhir untuk satu liga.
+    Endpoint: eventspastleague.php?id=<league_id>
+    Free plan: ~15 event terakhir.
+    """
+    league_id = LEAGUE_CODE_TO_ID.get(competition_code)
+    if not league_id:
+        return []
     try:
-        league_id = LEAGUE_CODE_TO_ID.get(competition_code)
-        if not league_id:
-            logger.warning(f"Kode liga tidak dikenal: {competition_code}")
-            return []
-        today = datetime.utcnow().date()
-        past  = today - timedelta(days=7)
-        data = await fetch_football_data("/fixtures", params={
-            "league":  league_id,
-            "season":  CURRENT_SEASON,
-            "from":    str(past),
-            "to":      str(today),
-            "status":  "FT-AET-PEN",  # Full Time, After ET, After Penalties
-        })
-        matches = data.get("response", [])[:20]
-        return [
-            {
-                "id":          m["fixture"]["id"],
-                "home_id":     m["teams"]["home"]["id"],
-                "away_id":     m["teams"]["away"]["id"],
-                "competition": m["league"]["name"],
-                "home":        m["teams"]["home"]["name"],
-                "away":        m["teams"]["away"]["name"],
-                "kickoff":     m["fixture"]["date"],
+        data = await fetch_tsdb("eventspastleague.php", params={"id": league_id})
+        events = data.get("events") or []
+        result = []
+        for e in events:
+            # Hanya ambil yang sudah ada skor
+            home_score = e.get("intHomeScore")
+            away_score = e.get("intAwayScore")
+            if home_score is None or away_score is None:
+                continue
+            result.append({
+                "id":          e.get("idEvent"),
+                "competition": e.get("strLeague", competition_code),
+                "home":        e.get("strHomeTeam", ""),
+                "away":        e.get("strAwayTeam", ""),
+                "kickoff":     e.get("dateEvent", ""),
                 "score": {
-                    "home": m["goals"]["home"],
-                    "away": m["goals"]["away"],
+                    "home": int(home_score),
+                    "away": int(away_score),
                 },
-            }
-            for m in matches
-        ]
+            })
+        return result
     except Exception as e:
-        logger.error(f"football-data fetch error: {e}")
+        logger.error(f"get_finished_matches error ({competition_code}): {e}")
         return []
 
 
 async def refresh_team_cache():
-    """Ambil semua tim dari semua liga yang disupport menggunakan API-Football v3.
-    
-    Endpoint: GET /teams?league=<id>&season=<year>
-    Response: {"response": [{"team": {"id":..,"name":..,"code":..}, "venue": {...}}, ...]}
+    """
+    Isi _team_name_to_id dari semua liga yang disupport.
+    Endpoint: lookup_all_teams.php?id=<league_id>
     """
     global _team_name_to_id, _team_id_to_name
-    new_name_map: dict[str, int] = {}
-    new_id_map:   dict[int, str] = {}
+    new_name: dict[str, str] = {}
+    new_id:   dict[str, str] = {}
     for comp_code, league_id in LEAGUE_CODE_TO_ID.items():
         try:
-            data = await fetch_football_data("/teams", params={
-                "league": league_id,
-                "season": CURRENT_SEASON,
-            })
-            for item in data.get("response", []):
-                t    = item.get("team", {})
-                tid  = t.get("id")
-                name = t.get("name", "")
+            data = await fetch_tsdb("lookup_all_teams.php", params={"id": league_id})
+            for t in (data.get("teams") or []):
+                tid  = str(t.get("idTeam", ""))
+                name = t.get("strTeam", "")
                 if not tid or not name:
                     continue
-                new_name_map[name.lower()] = tid
-                new_id_map[tid] = name
-                # simpan juga kode pendek (code), misal "LIV", "MCI"
-                if t.get("code"):
-                    new_name_map[t["code"].lower()] = tid
+                new_name[name.lower()] = tid
+                new_id[tid] = name
+                # alias pendek: "strTeamShort" kalau ada
+                short = t.get("strTeamShort", "")
+                if short:
+                    new_name[short.lower()] = tid
         except Exception as e:
-            logger.warning(f"team cache refresh skip {comp_code} (league {league_id}): {e}")
-    _team_name_to_id.update(new_name_map)
-    _team_id_to_name.update(new_id_map)
+            logger.warning(f"team cache skip {comp_code}: {e}")
+    _team_name_to_id.update(new_name)
+    _team_id_to_name.update(new_id)
     logger.info(f"✅ Team cache refreshed: {len(_team_name_to_id)} entries")
 
 
-def _find_team_id(team_name: str) -> Optional[int]:
-    """Cari team ID dari nama tim (fuzzy, case-insensitive)."""
+def _find_team_id(team_name: str) -> Optional[str]:
+    """Cari TheSportsDB team ID dari nama tim (case-insensitive, partial match)."""
     key = team_name.lower().strip()
     if key in _team_name_to_id:
         return _team_name_to_id[key]
-    # partial match
     for k, v in _team_name_to_id.items():
         if key in k or k in key:
             return v
     return None
 
 
-# ── Next match cache: team_id → match dict, TTL 30 menit ──────────────────
-_next_match_cache: dict[int, tuple[dict | None, float]] = {}  # id → (match, timestamp)
-NEXT_MATCH_CACHE_TTL = 1800  # 30 menit
-
-
-async def get_next_match_for_team(team_id: int) -> Optional[dict]:
-    """Ambil 1 pertandingan terdekat (SCHEDULED) untuk team_id tertentu.
-    Hasil di-cache 30 menit supaya endpoint upcoming-predictions cepat.
+async def get_next_match_for_team(team_id: str) -> Optional[dict]:
+    """
+    Ambil event berikutnya untuk satu tim.
+    Endpoint: eventsnext.php?id=<team_id>
+    Free plan: mengembalikan 1 event (home only). Premium: 10 events.
     """
     import time
     now = time.time()
     if team_id in _next_match_cache:
-        cached_match, cached_at = _next_match_cache[team_id]
+        cached, cached_at = _next_match_cache[team_id]
         if now - cached_at < NEXT_MATCH_CACHE_TTL:
-            return cached_match
+            return cached
 
     try:
-        # API-Football v3: GET /fixtures?team=<id>&next=5
-        data = await fetch_football_data("/fixtures", params={
-            "team":   team_id,
-            "next":   5,
-            "season": CURRENT_SEASON,
-        })
-        matches = data.get("response", [])
-        if not matches:
+        data = await fetch_tsdb("eventsnext.php", params={"id": team_id})
+        events = data.get("events") or []
+        if not events:
             _next_match_cache[team_id] = (None, now)
             return None
-        m = matches[0]
+        e = events[0]
+        kickoff_str = e.get("strTimestamp") or e.get("dateEvent", "")
+        try:
+            if "T" in str(kickoff_str):
+                ko = datetime.fromisoformat(kickoff_str.replace("Z", "+00:00"))
+            else:
+                t = e.get("strTime", "00:00:00") or "00:00:00"
+                ko = datetime.fromisoformat(f"{kickoff_str}T{t}+00:00")
+            kickoff_utc = ko.isoformat()
+        except Exception:
+            kickoff_utc = kickoff_str
+
         result = {
-            "id":          m["fixture"]["id"],
-            "competition": m["league"]["name"],
-            "home":        m["teams"]["home"]["name"],
-            "away":        m["teams"]["away"]["name"],
-            "kickoff_utc": m["fixture"]["date"],
-            "status":      m["fixture"]["status"]["short"],
+            "id":          e.get("idEvent"),
+            "competition": e.get("strLeague", ""),
+            "home":        e.get("strHomeTeam", ""),
+            "away":        e.get("strAwayTeam", ""),
+            "kickoff_utc": kickoff_utc,
+            "status":      e.get("strStatus", "NS"),
         }
         _next_match_cache[team_id] = (result, now)
         return result
@@ -296,23 +289,22 @@ async def get_next_match_for_team(team_id: int) -> Optional[dict]:
 
 
 def _is_team_in_api(match_name: str) -> bool:
-    """Cek apakah salah satu tim dalam 'Home vs Away' ada di cache API."""
     if " vs " not in match_name:
         return False
     parts = match_name.split(" vs ", 1)
-    home_found = _find_team_id(parts[0].strip()) is not None
-    away_found = _find_team_id(parts[1].strip()) is not None
-    return home_found or away_found
+    return (
+        _find_team_id(parts[0].strip()) is not None
+        or _find_team_id(parts[1].strip()) is not None
+    )
 
 
 def _cleanup_unknown_predictions():
-    """Hapus prediksi tim unknown yang sudah lebih dari 24 jam."""
     now = datetime.now(timezone.utc)
     expired = [k for k, ts in _unknown_team_predictions.items()
                if (now - ts).total_seconds() > UNKNOWN_TEAM_TTL_HOURS * 3600]
     for k in expired:
         del _unknown_team_predictions[k]
-        logger.info(f"🗑️  Removed expired unknown-team prediction: {k}")
+        logger.info(f"🗑️  Removed expired: {k}")
     return expired
 
 
@@ -324,10 +316,9 @@ async def auto_track_results():
     db = get_db()
     while True:
         try:
-            # ── Cleanup tim unknown yang sudah expired ──
             expired = _cleanup_unknown_predictions()
             if expired:
-                await broadcast_log("system", {"msg": f"Removed {len(expired)} expired unknown-team predictions"})
+                await broadcast_log("system", {"msg": f"Removed {len(expired)} expired predictions"})
 
             for comp in SUPPORTED_COMPETITIONS:
                 finished = await get_finished_matches(comp)
@@ -346,7 +337,7 @@ async def auto_track_results():
                                 actual_result=f"{h}-{a}",
                                 predicted_pick=pred.predicted_pick,
                                 outcome=outcome,
-                                notes="Auto-tracked via football-data API"
+                                notes="Auto-tracked via TheSportsDB"
                             )
                             db.save_result(result)
                             get_learning_engine().analyze_and_learn(pred.id, f"{h}-{a}", outcome)
@@ -378,11 +369,13 @@ def _evaluate_prediction(pred, home_goals: int, away_goals: int) -> Optional[str
     elif bet == "OU":
         total = home_goals + away_goals
         if "over" in pick:
-            line_match = __import__("re").search(r"(\d+\.?\d*)", pick)
+            import re
+            line_match = re.search(r"(\d+\.?\d*)", pick)
             line = float(line_match.group(1)) if line_match else 2.5
             return "win" if total > line else "loss"
         if "under" in pick:
-            line_match = __import__("re").search(r"(\d+\.?\d*)", pick)
+            import re
+            line_match = re.search(r"(\d+\.?\d*)", pick)
             line = float(line_match.group(1)) if line_match else 2.5
             return "win" if total < line else "loss"
     return None
@@ -396,11 +389,10 @@ def _evaluate_prediction(pred, home_goals: int, away_goals: int) -> Optional[str
 async def startup():
     asyncio.create_task(auto_track_results())
     asyncio.create_task(_team_cache_refresh_loop())
-    logger.info("🚀 Backend started. Auto-tracker + team cache running.")
+    logger.info("🚀 Backend started. TheSportsDB API aktif.")
 
 
 async def _team_cache_refresh_loop():
-    """Refresh team cache setiap 6 jam."""
     while True:
         await refresh_team_cache()
         await asyncio.sleep(6 * 3600)
@@ -473,17 +465,13 @@ async def list_competitions():
 
 @app.get("/api/next-match/{team_name}")
 async def get_next_match(team_name: str):
-    """
-    Cari pertandingan terdekat untuk satu tim.
-    Kalau tim tidak ada di API → return not_in_api: true
-    """
     team_id = _find_team_id(team_name)
     if team_id is None:
         return {
-            "team_name":   team_name,
-            "not_in_api":  True,
-            "next_match":  None,
-            "msg":         f"Team '{team_name}' tidak ditemukan di football-data API",
+            "team_name":  team_name,
+            "not_in_api": True,
+            "next_match": None,
+            "msg":        f"Team '{team_name}' tidak ditemukan di TheSportsDB",
         }
     match = await get_next_match_for_team(team_id)
     if match is None:
@@ -495,26 +483,23 @@ async def get_next_match(team_name: str):
             "msg":        "Tidak ada jadwal mendatang",
         }
 
-    # Hitung time_left ke kickoff (WIB +7)
     kickoff_utc = datetime.fromisoformat(match["kickoff_utc"].replace("Z", "+00:00"))
     now_utc     = datetime.now(timezone.utc)
     delta       = kickoff_utc - now_utc
     seconds_left = max(int(delta.total_seconds()), 0)
     hours_left   = seconds_left // 3600
     mins_left    = (seconds_left % 3600) // 60
-
-    # Konversi ke WIB
-    kickoff_wib = kickoff_utc + timedelta(hours=7)
+    kickoff_wib  = kickoff_utc + timedelta(hours=7)
 
     return {
-        "team_name":     team_name,
-        "team_id":       team_id,
-        "not_in_api":    False,
-        "next_match":    {
+        "team_name":  team_name,
+        "team_id":    team_id,
+        "not_in_api": False,
+        "next_match": {
             **match,
-            "kickoff_wib":   kickoff_wib.strftime("%Y-%m-%dT%H:%M:%S+07:00"),
-            "time_left_sec": seconds_left,
-            "time_left_str": f"{hours_left}h {mins_left}m" if hours_left > 0 else f"{mins_left}m",
+            "kickoff_wib":     kickoff_wib.strftime("%Y-%m-%dT%H:%M:%S+07:00"),
+            "time_left_sec":   seconds_left,
+            "time_left_str":   f"{hours_left}h {mins_left}m" if hours_left > 0 else f"{mins_left}m",
             "already_started": seconds_left == 0,
         },
     }
@@ -522,12 +507,6 @@ async def get_next_match(team_name: str):
 
 @app.get("/api/upcoming-predictions")
 async def get_upcoming_predictions():
-    """
-    Ambil prediksi pending + next match info per tim.
-    - Tim ada di API  → tampilkan next match + countdown WIB
-    - Tim tidak ada   → api_status='unknown', auto-hapus setelah 24h
-    - Team cache kosong → fallback: parse match_name langsung dari jadwal liga
-    """
     db = get_db()
     with db._get_conn() as conn:
         rows = conn.execute("""
@@ -545,28 +524,25 @@ async def get_upcoming_predictions():
     if not pending:
         return []
 
-    # ── Kumpulkan semua team ID yang dibutuhkan dulu ─────────────────────────
-    team_id_map: dict[str, int | None] = {}   # match_name → team_id (home)
+    team_id_map: dict[str, str | None] = {}
     for p in pending:
-        mn = p["match_name"]
+        mn    = p["match_name"]
         parts = mn.split(" vs ", 1) if " vs " in mn else [mn]
-        tid = _find_team_id(parts[0].strip())
+        tid   = _find_team_id(parts[0].strip())
         if not tid and len(parts) > 1:
             tid = _find_team_id(parts[1].strip())
         team_id_map[mn] = tid
 
-    # ── Fetch next match secara PARALEL untuk semua tim yang ditemukan ───────
     unique_ids = list({v for v in team_id_map.values() if v is not None})
+    id_to_match: dict[str, dict | None] = {}
     if unique_ids:
-        tasks = [get_next_match_for_team(tid) for tid in unique_ids]
-        fetched = await asyncio.gather(*tasks, return_exceptions=True)
-        id_to_match: dict[int, dict | None] = {}
+        fetched = await asyncio.gather(
+            *[get_next_match_for_team(tid) for tid in unique_ids],
+            return_exceptions=True
+        )
         for tid, res in zip(unique_ids, fetched):
             id_to_match[tid] = res if isinstance(res, dict) else None
-    else:
-        id_to_match = {}
 
-    # ── Susun hasil ──────────────────────────────────────────────────────────
     now_utc = datetime.now(timezone.utc)
     result  = []
     for p in pending:
@@ -611,12 +587,11 @@ async def get_upcoming_predictions():
 
 @app.delete("/api/cleanup-unknown")
 async def cleanup_unknown():
-    """Manual trigger untuk hapus prediksi tim unknown yang expired."""
     expired = _cleanup_unknown_predictions()
     return {"removed": expired, "count": len(expired)}
 
 
-# ── Push dari bot: prediksi per match ────────────────────────────────────────
+# ── Push dari bot ─────────────────────────────────────────────────────────────
 
 class PredictionPush(BaseModel):
     match:       str
@@ -629,19 +604,9 @@ class PredictionPush(BaseModel):
 
 @app.post("/api/push-prediction")
 async def push_prediction(data: PredictionPush):
-    """Bot memanggil endpoint ini setelah tiap match selesai dianalisa.
-    
-    PENTING: Endpoint ini juga menyimpan ke database agar data tidak hilang
-    saat web di-refresh. (agents.py sudah save sendiri, tapi kalau bot jalan
-    di mesin berbeda dari backend, DB-nya berbeda — endpoint ini adalah
-    satu-satunya sumber kebenaran untuk web.)
-    """
-    # ── Simpan ke database supaya /api/predictions tetap ada setelah refresh ──
     try:
         from database import PredictionRecord
         db = get_db()
-
-        # Hindari duplikat: cek apakah match ini sudah ada dalam 5 menit terakhir
         with db._get_conn() as conn:
             existing = conn.execute(
                 """SELECT id FROM predictions
@@ -662,25 +627,21 @@ async def push_prediction(data: PredictionPush):
                 include_in_parlay=data.include,
             )
             pred_id = db.save_prediction(record)
-            logger.info(f"💾 push-prediction saved to DB: #{pred_id} {data.match}")
+            logger.info(f"💾 saved #{pred_id}: {data.match}")
         else:
-            logger.info(f"⏭️  push-prediction skip duplicate: {data.match}")
+            logger.info(f"⏭️  skip duplicate: {data.match}")
     except Exception as e:
-        logger.error(f"push-prediction DB save error: {e}")
+        logger.error(f"push-prediction DB error: {e}")
 
-    # ── Broadcast ke semua WebSocket client ──
     await broadcast_log("new_prediction", data.dict())
 
-    # ── Cek apakah tim ada di API, kalau tidak → track sebagai unknown ──
     if not _is_team_in_api(data.match):
         if data.match not in _unknown_team_predictions:
             _unknown_team_predictions[data.match] = datetime.now(timezone.utc)
-        logger.warning(f"⚠️  Team not in API, tracked as unknown (24h TTL): {data.match}")
+        logger.warning(f"⚠️  Unknown team (24h TTL): {data.match}")
 
     return {"ok": True}
 
-
-# ── Push dari bot: parlay final ───────────────────────────────────────────────
 
 class ParlayPush(BaseModel):
     parlay_1x2:  list
@@ -691,7 +652,6 @@ class ParlayPush(BaseModel):
 
 @app.post("/api/push-parlay")
 async def push_parlay(data: ParlayPush):
-    """Bot memanggil endpoint ini setelah parlay final selesai dibangun."""
     await broadcast_log("parlay_ready", data.dict())
     return {"ok": True}
 
