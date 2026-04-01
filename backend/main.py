@@ -46,15 +46,41 @@ TSDB_BASE = f"https://www.thesportsdb.com/api/v1/json/{TSDB_KEY}"
 # Mapping kode liga → League ID di TheSportsDB
 # Cari ID di: https://www.thesportsdb.com/sport/leagues  → pilih liga → lihat URL
 # Contoh: https://www.thesportsdb.com/league/4328  → ID = 4328
+# Semua liga di bawah tersedia di TheSportsDB FREE tier (key = "123")
 LEAGUE_CODE_TO_ID = {
+    # ── Top 5 Europe ────────────────────────────────────────────────────────────
     "PL":  "4328",   # English Premier League
     "PD":  "4335",   # Spanish La Liga
     "SA":  "4332",   # Italian Serie A
     "BL1": "4331",   # German Bundesliga
     "FL1": "4334",   # French Ligue 1
+    # ── European cups ───────────────────────────────────────────────────────────
     "UCL": "4480",   # UEFA Champions League
+    "UEL": "4481",   # UEFA Europa League
+    # ── Other Europe ────────────────────────────────────────────────────────────
+    "ELC": "4329",   # English Championship (2nd div)
+    "PPL": "4344",   # Primeira Liga (Portugal)
+    "DED": "4337",   # Eredivisie (Netherlands)
+    # ── Americas ────────────────────────────────────────────────────────────────
+    "BSA": "4351",   # Brasileirão Série A
+    "MLS": "4346",   # Major League Soccer (USA)
 }
 SUPPORTED_COMPETITIONS = list(LEAGUE_CODE_TO_ID.keys())
+# Nama display untuk setiap kode (dipakai di log, API response, dsb.)
+COMPETITION_NAMES = {
+    "PL":  "Premier League",
+    "PD":  "La Liga",
+    "SA":  "Serie A",
+    "BL1": "Bundesliga",
+    "FL1": "Ligue 1",
+    "UCL": "Champions League",
+    "UEL": "Europa League",
+    "ELC": "Championship",
+    "PPL": "Primeira Liga",
+    "DED": "Eredivisie",
+    "BSA": "Brasileirão",
+    "MLS": "MLS",
+}
 
 # ── Prediksi dari AI untuk tim yang TIDAK ditemukan di API ────────────────────
 _unknown_team_predictions: dict[str, datetime] = {}
