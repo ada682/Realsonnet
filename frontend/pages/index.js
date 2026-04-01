@@ -1,4 +1,3 @@
-// frontend/pages/index.js — Parlay AI Dashboard v3
 "use client";
 import { useEffect, useState, useRef, useCallback } from "react";
 import Head from "next/head";
