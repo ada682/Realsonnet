@@ -68,6 +68,14 @@ _team_id_to_name: dict[str, str] = {}   # "133602" → "Liverpool"
 _next_match_cache: dict[str, tuple[dict | None, float]] = {}
 NEXT_MATCH_CACHE_TTL = 1800  # 30 menit
 
+# ── Schedule cache (per competition) ───────────────────────────────────────────
+_schedule_cache: dict[str, tuple[list, float]] = {}
+SCHEDULE_CACHE_TTL = 900  # 15 menit — cukup fresh, hemat request
+
+# ── Global rate-limit semaphore (TheSportsDB free: ~30 req/min) ────────────────
+# Batasi 4 request paralel sekaligus agar tidak 429
+_tsdb_semaphore = asyncio.Semaphore(4)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # WEBSOCKET MANAGER
@@ -106,18 +114,38 @@ async def broadcast_log(event: str, data: dict):
 # THESPORTSDB API HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def fetch_tsdb(endpoint: str, params: dict = None) -> dict:
+async def fetch_tsdb(endpoint: str, params: dict = None, _retries: int = 3) -> dict:
     """
-    Fetch dari TheSportsDB v1 API.
-    Base URL: https://www.thesportsdb.com/api/v1/json/123/
-    Tidak perlu header khusus — key sudah ada di URL.
-    Rate limit: 30 req/menit (free). Cukup untuk bot prediksi.
+    Fetch dari TheSportsDB v1 API dengan rate-limit guard dan retry/backoff.
+    - Semaphore: maks 4 request paralel
+    - Retry: hingga 3x jika kena 429, dengan exponential backoff (2s, 4s, 8s)
     """
     url = f"{TSDB_BASE}/{endpoint}"
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.get(url, params=params)
-        r.raise_for_status()
-        return r.json()
+    async with _tsdb_semaphore:
+        for attempt in range(_retries):
+            try:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    r = await client.get(url, params=params)
+                    if r.status_code == 429:
+                        wait = 2 ** (attempt + 1)  # 2, 4, 8 detik
+                        logger.warning(
+                            f"TheSportsDB 429 ({endpoint}), retry #{attempt+1} in {wait}s"
+                        )
+                        await asyncio.sleep(wait)
+                        continue
+                    r.raise_for_status()
+                    return r.json()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429 and attempt < _retries - 1:
+                    wait = 2 ** (attempt + 1)
+                    logger.warning(f"TheSportsDB 429 ({endpoint}), retry #{attempt+1} in {wait}s")
+                    await asyncio.sleep(wait)
+                    continue
+                raise
+        raise httpx.HTTPStatusError(
+            f"TheSportsDB 429 after {_retries} retries",
+            request=None, response=None  # type: ignore[arg-type]
+        )
 
 
 async def get_upcoming_matches(competition_code: str = "PL", days: int = 7) -> list:
@@ -125,11 +153,22 @@ async def get_upcoming_matches(competition_code: str = "PL", days: int = 7) -> l
     Ambil fixtures mendatang untuk satu liga.
     Endpoint: eventsnextleague.php?id=<league_id>
     Free plan: mengembalikan ~15 event berikutnya.
+    Hasil di-cache 15 menit per kompetisi untuk menghindari 429.
     """
+    import time
     league_id = LEAGUE_CODE_TO_ID.get(competition_code)
     if not league_id:
         logger.warning(f"Kode liga tidak dikenal: {competition_code}")
         return []
+
+    # ── Serve from cache jika masih fresh ────────────────────────────────────
+    now_ts = time.time()
+    if competition_code in _schedule_cache:
+        cached_list, cached_at = _schedule_cache[competition_code]
+        if now_ts - cached_at < SCHEDULE_CACHE_TTL:
+            logger.debug(f"schedule cache hit: {competition_code}")
+            return cached_list
+
     try:
         data = await fetch_tsdb("eventsnextleague.php", params={"id": league_id})
         events = data.get("events") or []
@@ -162,9 +201,16 @@ async def get_upcoming_matches(competition_code: str = "PL", days: int = 7) -> l
                 "home_id":     e.get("idHomeTeam"),
                 "away_id":     e.get("idAwayTeam"),
             })
+        # ── Simpan ke cache ───────────────────────────────────────────────────
+        import time as _time
+        _schedule_cache[competition_code] = (result, _time.time())
         return result
     except Exception as e:
         logger.error(f"get_upcoming_matches error ({competition_code}): {e}")
+        # Kalau ada cached data (even stale), kembalikan itu daripada kosong
+        if competition_code in _schedule_cache:
+            logger.warning(f"Returning stale cache for {competition_code} after error")
+            return _schedule_cache[competition_code][0]
         return []
 
 
@@ -454,8 +500,27 @@ async def get_report():
 
 @app.get("/api/schedule")
 async def get_schedule(competition: str = "PL"):
+    import time
+    cached = _schedule_cache.get(competition)
+    cache_age = round(time.time() - cached[1]) if cached else None
     matches = await get_upcoming_matches(competition)
-    return {"matches": matches, "competition": competition}
+    return {
+        "matches": matches,
+        "competition": competition,
+        "cache_age_sec": cache_age,
+        "from_cache": cached is not None and cache_age is not None and cache_age < SCHEDULE_CACHE_TTL,
+    }
+
+
+@app.delete("/api/cache/schedule")
+async def clear_schedule_cache(competition: str = None):
+    """Hapus schedule cache (semua atau per kompetisi) — untuk debugging."""
+    if competition:
+        removed = _schedule_cache.pop(competition, None) is not None
+        return {"cleared": [competition] if removed else []}
+    keys = list(_schedule_cache.keys())
+    _schedule_cache.clear()
+    return {"cleared": keys}
 
 
 @app.get("/api/finished")
