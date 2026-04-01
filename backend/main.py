@@ -39,6 +39,10 @@ app.add_middleware(
 FOOTBALL_DATA_BASE      = "https://api.football-data.org/v4"
 SUPPORTED_COMPETITIONS = ["PL", "PD", "SA", "BL1", "FL1"]
 
+# Liga yang tersedia di free tier untuk endpoint /competitions/{code}/teams
+# FL1 (Ligue 1) sering tidak tersedia di free plan → gunakan list terpisah
+TEAM_CACHE_COMPETITIONS = ["PL", "PD", "SA", "BL1"]
+
 # ── Team name → ID cache (diisi saat startup dari API) ─────────────────────
 _team_name_to_id: dict[str, int] = {}      # "Liverpool FC" → 64
 _team_id_to_name: dict[int, str] = {}      # 64 → "Liverpool FC"
@@ -98,7 +102,9 @@ async def get_upcoming_matches(competition_code: str = "PL", days: int = 7) -> l
     try:
         today  = datetime.utcnow().date()
         future = today + timedelta(days=days)
-        path   = f"/competitions/{competition_code}/matches?dateFrom={today}&dateTo={future}"
+        # Gunakan endpoint global /matches (support dateFrom/dateTo di semua tier)
+        # Endpoint /competitions/{code}/matches?dateFrom=... butuh tier berbayar
+        path   = f"/matches?dateFrom={today}&dateTo={future}&competitions={competition_code}"
         data   = await fetch_football_data(path)
         matches = [m for m in data.get("matches", []) if m.get("status") in ("SCHEDULED", "TIMED")][:20]
         return [
@@ -123,8 +129,9 @@ async def get_finished_matches(competition_code: str = "PL") -> list:
     try:
         today = datetime.utcnow().date()
         past  = today - timedelta(days=7)
+        # Gunakan endpoint global /matches (support dateFrom/dateTo di semua tier)
         data  = await fetch_football_data(
-            f"/competitions/{competition_code}/matches?dateFrom={past}&dateTo={today}"
+            f"/matches?dateFrom={past}&dateTo={today}&status=FINISHED&competitions={competition_code}"
         )
         matches = [m for m in data.get("matches", []) if m.get("status") == "FINISHED"][:20]
         return [
@@ -149,11 +156,15 @@ async def get_finished_matches(competition_code: str = "PL") -> list:
 
 
 async def refresh_team_cache():
-    """Ambil semua tim dari semua liga yang disupport, simpan ke cache nama→ID."""
+    """Ambil semua tim dari liga yang support endpoint /teams, simpan ke cache nama→ID.
+    
+    Catatan: Tidak semua liga tersedia di free tier untuk endpoint /competitions/{code}/teams.
+    Gunakan TEAM_CACHE_COMPETITIONS (tanpa FL1) untuk menghindari error 400/403.
+    """
     global _team_name_to_id, _team_id_to_name
     new_name_map: dict[str, int] = {}
     new_id_map:   dict[int, str] = {}
-    for comp in SUPPORTED_COMPETITIONS:
+    for comp in TEAM_CACHE_COMPETITIONS:
         try:
             data = await fetch_football_data(f"/competitions/{comp}/teams")
             for t in data.get("teams", []):
@@ -167,7 +178,7 @@ async def refresh_team_cache():
                 if t.get("tla"):
                     new_name_map[t["tla"].lower()] = tid
         except Exception as e:
-            logger.warning(f"team cache refresh skip {comp}: {e}")
+            logger.warning(f"team cache refresh skip {comp}: {e} — kompetisi ini mungkin tidak tersedia di tier kamu")
     _team_name_to_id.update(new_name_map)
     _team_id_to_name.update(new_id_map)
     logger.info(f"✅ Team cache refreshed: {len(_team_name_to_id)} entries")
