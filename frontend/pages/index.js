@@ -1208,20 +1208,20 @@ export default function Dashboard() {
         {tab === "predictions" && (
           <div className="glass" style={{ overflow: "hidden" }}>
             <div style={{ padding: "14px 18px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 11, fontWeight: 700, color: T.sub, letterSpacing: "1px" }}>ALL PREDICTIONS</span>
-              <span className="badge bw" style={{ marginLeft: 6 }}>{resolved.length} resolved</span>
-              <span className="badge bp">{o?.pending ?? 0} pending</span>
+              <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 11, fontWeight: 700, color: T.sub, letterSpacing: "1px" }}>PICKS PENDING</span>
+              <span className="badge bp" style={{ marginLeft: 6 }}>{preds.filter(p => !p.outcome).length} pending</span>
+              <span className="badge bs">{resolved.length} resolved → History</span>
             </div>
             <InfoBanner preds={preds} />
-            {preds.filter(p => p.outcome !== "skip").length === 0
-              ? <EmptyState icon="🔮" title="Database kosong" desc={"Predictions disimpan via db.save_prediction()\nbukan lewat WebSocket push"} />
+            {preds.filter(p => !p.outcome).length === 0
+              ? <EmptyState icon="✅" title="Semua picks sudah selesai!" desc={"Tidak ada picks pending.\nCek tab History untuk lihat hasil sebelumnya."} />
               : <div className="scroll-x">
                   <table className="tbl">
                     <thead>
-                      <tr><th>Match</th><th>Type</th><th>Pick</th><th>Conf</th><th>Parlay</th><th>Result</th><th>Score</th></tr>
+                      <tr><th>Match</th><th>Type</th><th>Pick</th><th>Conf</th><th>Parlay</th><th>Status</th></tr>
                     </thead>
                     <tbody>
-                      {preds.filter(p => p.outcome !== "skip").map(p => (
+                      {preds.filter(p => !p.outcome).map(p => (
                         <tr key={p.id}>
                           <td>
                             <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>{p.match_name}</div>
@@ -1239,12 +1239,8 @@ export default function Dashboard() {
                             }
                           </td>
                           <td>
-                            {p.outcome
-                              ? <span className={`badge ${p.outcome==="win"?"bw":"bl"}`}>{p.outcome.toUpperCase()}</span>
-                              : <span className="badge bp">PENDING</span>
-                            }
+                            <span className="badge bp">⏳ PENDING</span>
                           </td>
-                          <td style={{ fontFamily:"'JetBrains Mono',monospace", fontSize: 11, color: T.sub }}>{p.actual_result ?? "—"}</td>
                         </tr>
                       ))}
                     </tbody>
