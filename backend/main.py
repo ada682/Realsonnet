@@ -582,9 +582,50 @@ async def get_learning_context_api(match: str = ""):
     Bot tidak bisa baca DB langsung (volume hanya di-mount di sini),
     jadi learning context dikirim via HTTP.
     """
-    from learning_engine import LearningContext
     context = get_learning_engine().get_learning_context(match)
     return {"context_text": context.to_prompt_text()}
+
+
+@app.post("/api/reset")
+async def reset_all(secret: str = ""):
+    """
+    Reset semua history & picks di web → stats jadi 0 lagi.
+    learning_patterns TETAP (AI tetap ingat pola dari hasil sebelumnya).
+
+    Requires: ?secret=<SECRET_KEY> untuk keamanan.
+    """
+    if secret != SECRET_KEY:
+        raise HTTPException(status_code=403, detail="Invalid secret key")
+
+    db = get_db()
+    with db._get_conn() as conn:
+        # Hapus hasil dulu (foreign key child)
+        conn.execute("DELETE FROM match_results")
+        # Hapus semua prediksi
+        conn.execute("DELETE FROM predictions")
+        # Reset auto-increment sequence (optional, nice to have)
+        conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('predictions', 'match_results')")
+        conn.commit()
+
+    # Bersihkan in-memory caches
+    _unknown_team_predictions.clear()
+
+    # Broadcast ke semua WebSocket client → frontend auto-refresh
+    await broadcast_log("reset", {
+        "msg": "All history and picks have been reset. Learning patterns preserved.",
+        "wins": 0,
+        "losses": 0,
+        "win_rate": 0,
+        "total": 0,
+    })
+
+    logger.info("🗑️ RESET: All predictions and match_results cleared. Learning patterns kept.")
+    return {
+        "ok": True,
+        "msg": "Reset complete. Picks and history cleared. Learning patterns preserved.",
+        "tables_cleared": ["predictions", "match_results"],
+        "tables_kept": ["learning_patterns"],
+    }
 
 
 @app.get("/api/stats")
@@ -1000,11 +1041,7 @@ async def submit_hasil(data: SubmitHasilRequest):
     # Skip tidak trigger learning engine (bukan hasil beneran)
     if not is_skip:
         try:
-            get_learning_engine().analyze_and_learn(
-                pred_id,
-                f"Manual input: {data.outcome.upper()}",
-                data.outcome
-            )
+            get_learning_engine().analyze_result(pred_id)
         except Exception as e:
             logger.warning(f"Learning engine analyze failed: {e}")
 
