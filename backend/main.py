@@ -575,6 +575,18 @@ async def _team_cache_refresh_loop():
 # REST ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@app.get("/api/learning-context")
+async def get_learning_context_api(match: str = ""):
+    """
+    Dipakai oleh agents.py di bot container untuk fetch learning context.
+    Bot tidak bisa baca DB langsung (volume hanya di-mount di sini),
+    jadi learning context dikirim via HTTP.
+    """
+    from learning_engine import LearningContext
+    context = get_learning_engine().get_learning_context(match)
+    return {"context_text": context.to_prompt_text()}
+
+
 @app.get("/api/stats")
 async def get_stats():
     db    = get_db()
@@ -988,7 +1000,11 @@ async def submit_hasil(data: SubmitHasilRequest):
     # Skip tidak trigger learning engine (bukan hasil beneran)
     if not is_skip:
         try:
-            get_learning_engine().analyze_result(pred_id)
+            get_learning_engine().analyze_and_learn(
+                pred_id,
+                f"Manual input: {data.outcome.upper()}",
+                data.outcome
+            )
         except Exception as e:
             logger.warning(f"Learning engine analyze failed: {e}")
 
