@@ -150,11 +150,16 @@ body>*{position:relative;z-index:1}
 .ppick{
   font-family:'Space Mono',monospace;font-size:11px;
   padding:9px 13px;border-bottom:1px solid rgba(255,255,255,.04);
-  display:flex;align-items:flex-start;gap:8px;color:${T.text};line-height:1.5;
+  display:flex;align-items:flex-start;gap:8px;color:${T.text};line-height:1.6;
   transition:background .15s;
 }
 .ppick:hover{background:rgba(255,255,255,.03)}
 .ppick:last-child{border-bottom:none}
+.ppick-text{flex:1;word-break:break-word;overflow-wrap:anywhere;min-width:0}
+@media(max-width:768px){
+  .ppick{font-size:12px;padding:10px 12px;gap:6px;line-height:1.7}
+  .ppick-text{font-size:12px}
+}
 
 /* ─── Big number ─── */
 .bignum{font-family:'Outfit',sans-serif;font-size:30px;font-weight:800;letter-spacing:-1.5px;line-height:1;color:${T.text}}
@@ -262,6 +267,7 @@ body>*{position:relative;z-index:1}
   .main-grid{grid-template-columns:1fr!important}
   .bignum{font-size:24px}
   .tbl th,.tbl td{padding:10px 12px;font-size:11px}
+  .tbl td{word-break:break-word;overflow-wrap:anywhere}
   .ppick{word-break:break-word;overflow-wrap:anywhere}
   .log{word-break:break-word;overflow-wrap:anywhere}
   .glass{word-break:break-word;overflow-wrap:anywhere}
@@ -445,7 +451,7 @@ const ParlayPanel = ({ p }) => {
             {picks.map((pick, i) => (
               <div key={i} className="ppick">
                 <span style={{ color, flexShrink: 0, fontSize: 13 }}>›</span>
-                <span style={{ flex: 1 }}>{pick}</span>
+                <span className="ppick-text">{pick}</span>
               </div>
             ))}
           </div>
@@ -1165,7 +1171,7 @@ export default function Dashboard() {
                             </div>
                           </td>
                           <td><span className={`badge ${p.bet_type==="1X2"?"b1":p.bet_type==="OU"?"bo":"ba"}`}>{p.bet_type}</span></td>
-                          <td style={{ fontFamily:"'Space Mono',monospace", fontSize: 11, maxWidth: 160, color: T.text }}>{p.predicted_pick}</td>
+                          <td style={{ fontFamily:"'Space Mono',monospace", fontSize: 11, maxWidth: 160, color: T.text, wordBreak: "break-word", overflowWrap: "anywhere", minWidth: 90 }}>{p.predicted_pick}</td>
                           <td><ConfBar val={p.confidence} /></td>
                           <td>{p.include_in_parlay ? <span style={{ color: T.win, fontSize: 16, filter: `drop-shadow(0 0 6px ${T.win})` }}>✓</span> : <span className="badge bs">SKIP</span>}</td>
                           <td>{p.outcome ? <span className={`badge ${p.outcome==="win"?"bw":"bl"}`}>{p.outcome.toUpperCase()}</span> : <span className="badge bp">PENDING</span>}</td>
