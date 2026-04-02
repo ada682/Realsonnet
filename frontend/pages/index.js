@@ -237,14 +237,17 @@ body>*{position:relative;z-index:1}
     background:rgba(8,12,24,.95);border-top:1px solid ${T.border};
     z-index:100;padding:8px 0 calc(8px + env(safe-area-inset-bottom));
     backdrop-filter:blur(20px);
+    overflow-x:auto;-webkit-overflow-scrolling:touch;
+    scrollbar-width:none;
   }
+  .bottom-nav::-webkit-scrollbar{display:none}
   .bnav-item{
-    flex:1;display:flex;flex-direction:column;align-items:center;
-    gap:3px;cursor:pointer;padding:4px 0;transition:all .2s;
+    flex:0 0 auto;min-width:60px;display:flex;flex-direction:column;align-items:center;
+    gap:3px;cursor:pointer;padding:4px 8px;transition:all .2s;
     background:none;border:none;outline:none;
   }
   .bnav-item span:first-child{font-size:19px;line-height:1;transition:transform .25s cubic-bezier(.34,1.56,.64,1)}
-  .bnav-item span:last-child{font-size:9px;font-family:'Space Mono',monospace;letter-spacing:.5px}
+  .bnav-item span:last-child{font-size:8px;font-family:'Space Mono',monospace;letter-spacing:.3px;white-space:nowrap}
   .bnav-active span:first-child{transform:translateY(-3px) scale(1.15)}
   .bnav-active span:last-child{color:${T.accent}}
   .bnav-off span:last-child{color:${T.muted}}
@@ -259,6 +262,12 @@ body>*{position:relative;z-index:1}
   .main-grid{grid-template-columns:1fr!important}
   .bignum{font-size:24px}
   .tbl th,.tbl td{padding:10px 12px;font-size:11px}
+  .ppick{word-break:break-word;overflow-wrap:anywhere}
+  .log{word-break:break-word;overflow-wrap:anywhere}
+  .glass{word-break:break-word;overflow-wrap:anywhere}
+  h1{font-size:16px!important;letter-spacing:-0.5px!important}
+  header{padding:8px 12px!important}
+  .how-grid{grid-template-columns:1fr!important}
 }
 @media(min-width:769px){.mobile-only{display:none!important}}
 
@@ -1348,7 +1357,7 @@ export default function Dashboard() {
         {tab === "howitworks" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <AIFlowDiagram />
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }} className="stat-grid">
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }} className="stat-grid how-grid">
               {[
                 { icon: "🌍", title: "12 Liga Didukung", desc: "PL · PD · SA · BL1 · FL1 · UCL · UEL · ELC · PPL · DED · BSA · MLS — semua FREE via TheSportsDB", color: T.accent },
                 { icon: "🤖", title: "Multi-Agent Debate", desc: "3 AI agents berdebat setiap prediksi — statistik, odds value, dan konteks situasional", color: T.purple },
@@ -1395,6 +1404,8 @@ export default function Dashboard() {
           { key: "history",     icon: "📜", label: "History"  },
           { key: "schedule",    icon: "📅", label: "Schedule" },
           { key: "parlay",      icon: "🏆", label: "Parlay"   },
+          { key: "feed",        icon: "📡", label: "Live"     },
+          { key: "howitworks",  icon: "🧠", label: "How It Works" },
         ].map(n => (
           <button key={n.key} className={`bnav-item ${tab === n.key ? "bnav-active" : "bnav-off"}`} onClick={() => setTab(n.key)}>
             <span>{n.icon}</span>
