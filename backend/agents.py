@@ -10,12 +10,50 @@
 
 import re
 import logging
+import os
+import requests as _requests
 from dataclasses import dataclass, field
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from deepseek_wrapper import DeepSeekSession
 from database import get_db, PredictionRecord
 from learning_engine import get_learning_engine
+
+try:
+    from config import BACKEND_URL
+except ImportError:
+    BACKEND_URL = os.getenv("BACKEND_URL", "")
+
+
+def _fetch_learning_context_from_backend(matches_label: str) -> str:
+    """
+    Fetch learning context dari FastAPI backend (yang punya DB persisten + hasil /hasil).
+    Bot container tidak punya hasil match → learning context harus diambil dari backend.
+    Fallback ke local learning engine kalau backend tidak tersedia.
+    """
+    if BACKEND_URL:
+        try:
+            resp = _requests.get(
+                f"{BACKEND_URL}/api/learning-context",
+                params={"match": matches_label},
+                timeout=10
+            )
+            if resp.status_code == 200:
+                text = resp.json().get("context_text", "")
+                logger.info(f"✅ Learning context fetched from backend ({len(text)} chars)")
+                return text
+            else:
+                logger.warning(f"⚠️ Backend learning-context returned {resp.status_code}, using local fallback")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to fetch learning context from backend: {e}, using local fallback")
+
+    # Fallback: local learning engine (mungkin kosong kalau DB bot tidak punya hasil)
+    try:
+        learning = get_learning_engine().get_learning_context(matches_label)
+        return learning.to_prompt_text()
+    except Exception as e:
+        logger.warning(f"Local learning engine fallback failed: {e}")
+        return ""
 
 logger = logging.getLogger(__name__)
 
@@ -444,8 +482,8 @@ class MultiMatchRoom:
         Returns dict: { match_name: result_dict, ... }
         """
         logger.info(f"🎙️ MultiMatchRoom: {len(self.matches)} matches")
-        learning      = get_learning_engine().get_learning_context(" | ".join(self.matches))
-        learning_text = learning.to_prompt_text()
+        # Fetch learning context dari FastAPI backend (bukan DB lokal bot yang kosong)
+        learning_text = _fetch_learning_context_from_backend(" | ".join(self.matches))
 
         # ══════════════════════════════════════════════════════════════════════
         # FASE 1 — Tiap analyst analisa SEMUA match dalam satu prompt
